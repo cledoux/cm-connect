@@ -1,6 +1,6 @@
 ---
 archetype: capability
-status: draft
+status: implemented
 category: runner
 name: cm-docker-container
 governing_proposal: codemender-interactive-sandbox
