@@ -1,0 +1,15 @@
+# CodeMender local workspace state and reports
+.codemender/
+report.json
+*.report.json
+
+# Temporary files and logs
+*.log
+*.tmp
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

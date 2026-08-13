@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Governing: REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0007, REQ-0009
 set -euo pipefail
 
 IMAGE_NAME="${CM_IMAGE_NAME:-cm-sandbox:latest}"
