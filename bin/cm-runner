@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# CodeMender Batch Scanner Runner (Host Wrapper)
+# ==============================================================================
+set -euo pipefail
+
+IMAGE_NAME="${CM_IMAGE_NAME:-cm-runner:latest}"
+WORKSPACE_DIR="$(pwd)"
+
+DOCKER_ARGS=(
+    "--rm"
+    "-v" "${WORKSPACE_DIR}:/workspace"
+)
+
+# Allocate pseudo-TTY only if stdout and stdin are attached to a terminal
+if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_ARGS+=("-it")
+else
+    DOCKER_ARGS+=("-i")
+fi
+
+# Forward Application Default Credentials (ADC) if present
+if [ -d "${HOME}/.config/gcloud" ]; then
+    DOCKER_ARGS+=("-v" "${HOME}/.config/gcloud:/home/codemender/.config/gcloud:ro")
+fi
+
+# Forward Google access token if present
+if [ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]; then
+    DOCKER_ARGS+=("-e" "CLOUDSDK_AUTH_ACCESS_TOKEN=${CLOUDSDK_AUTH_ACCESS_TOKEN}")
+fi
+
+# Forward service account credentials file if present
+if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
+    CRED_FILE_NAME="$(basename "${GOOGLE_APPLICATION_CREDENTIALS}")"
+    DOCKER_ARGS+=("-v" "${GOOGLE_APPLICATION_CREDENTIALS}:/home/codemender/.config/gcloud/${CRED_FILE_NAME}:ro")
+    DOCKER_ARGS+=("-e" "GOOGLE_APPLICATION_CREDENTIALS=/home/codemender/.config/gcloud/${CRED_FILE_NAME}")
+fi
+
+exec docker run "${DOCKER_ARGS[@]}" "${IMAGE_NAME}" "$@"
