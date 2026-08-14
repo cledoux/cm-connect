@@ -5,7 +5,7 @@ TAG ?= latest
 USER_UID ?= 1000
 USER_GID ?= 1000
 
-.PHONY: help fmt lint test build clean
+.PHONY: help fmt lint test build integration-test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -26,6 +26,9 @@ build: lint ## Build the CodeMender batch runner Docker image (always lints firs
 		--build-arg USER_GID=$(USER_GID) \
 		-t $(IMAGE_NAME):$(TAG) \
 		-f docker/Dockerfile .
+
+integration-test: ## Run full container verification test suite with timeout
+	timeout 60s ./tests/integration_test.sh
 
 clean: ## Remove Docker image and clean local artifacts
 	docker rmi -f $(IMAGE_NAME):$(TAG) || true
