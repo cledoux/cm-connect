@@ -1,21 +1,31 @@
-# Governing: REQ-0009
+# Governing: REQ-0001, REQ-0006, REQ-0011
 
-IMAGE_NAME ?= cm-sandbox
+IMAGE_NAME ?= cm-runner
 TAG ?= latest
-USER_UID ?= $(shell id -u)
-USER_GID ?= $(shell id -g)
+USER_UID ?= 1000
+USER_GID ?= 1000
 
-.PHONY: help build clean
+.PHONY: help build test lint integration-test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the CodeMender interactive sandbox Docker image
+build: ## Build the CodeMender batch runner Docker image
 	docker build \
 		--build-arg USER_UID=$(USER_UID) \
 		--build-arg USER_GID=$(USER_GID) \
 		-t $(IMAGE_NAME):$(TAG) \
 		-f docker/Dockerfile .
 
-clean: ## Remove the sandbox Docker image
+test: ## Run Go unit tests with race detection, coverage, and timeout
+	go test -v -race -cover -timeout 60s ./cmd/cm-runner/...
+
+lint: ## Run Go static analysis (go vet)
+	go vet ./cmd/cm-runner/...
+
+integration-test: ## Run full container verification test suite with timeout
+	timeout 60s ./tests/integration_test.sh
+
+clean: ## Remove Docker image and clean local artifacts
 	docker rmi -f $(IMAGE_NAME):$(TAG) || true
+	rm -f bin/cm-runner.tmp

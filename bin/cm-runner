@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Governing: REQ-0001, REQ-0006, REQ-0011
+set -euo pipefail
+
+IMAGE_NAME="${CM_IMAGE_NAME:-cm-runner:latest}"
+WORKSPACE_DIR="$(pwd)"
+GCLOUD_DIR="${HOME}/.config/gcloud"
+
+# TTY detection for interactive vs batch mode
+if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_TTY_FLAGS="-it"
+else
+    DOCKER_TTY_FLAGS="-i"
+fi
+
+# Build docker args
+DOCKER_ARGS=(
+    ${DOCKER_TTY_FLAGS}
+    --rm
+    --name "cm-runner-$(date +%s)"
+    -v "${WORKSPACE_DIR}:/workspace"
+)
+
+# Mount host ADC directory if present
+if [ -d "${GCLOUD_DIR}" ]; then
+    DOCKER_ARGS+=( -v "${GCLOUD_DIR}:/home/codemender/.config/gcloud:ro" )
+fi
+
+# Forward CLOUDSDK_AUTH_ACCESS_TOKEN if set
+if [ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]; then
+    DOCKER_ARGS+=( -e "CLOUDSDK_AUTH_ACCESS_TOKEN=${CLOUDSDK_AUTH_ACCESS_TOKEN}" )
+fi
+
+# Forward GOOGLE_APPLICATION_CREDENTIALS if set
+if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+    CREDS_FILE="${GOOGLE_APPLICATION_CREDENTIALS}"
+    if [ -f "${CREDS_FILE}" ]; then
+        DOCKER_ARGS+=(
+            -v "${CREDS_FILE}:/auth/creds.json:ro"
+            -e "GOOGLE_APPLICATION_CREDENTIALS=/auth/creds.json"
+        )
+    fi
+fi
+
+exec docker run "${DOCKER_ARGS[@]}" "${IMAGE_NAME}" "$@"
