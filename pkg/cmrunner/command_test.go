@@ -5,50 +5,55 @@ import (
 	"testing"
 )
 
-func TestNewFindCommand(t *testing.T) {
-	// Empty target path defaults to "."
+func TestNewFindCommand_Classification(t *testing.T) {
+	// Empty target path defaults to "." and format defaults to "json"
 	cmd1 := NewFindCommand("")
 	if cmd1.TargetPath != "." {
 		t.Errorf("expected target '.', got %q", cmd1.TargetPath)
 	}
+	if cmd1.ReportFormat != "json" {
+		t.Errorf("expected default report format 'json', got %q", cmd1.ReportFormat)
+	}
 
-	// Explicit target path preserved
-	cmd2 := NewFindCommand("src/auth", "--model", "vertex:gemini")
+	// Extracts format flag and forwards scanner flags
+	cmd2 := NewFindCommand("src/auth", "-y", "--format", "sarif", "-c", "auth focus", "--unrestricted")
 	if cmd2.TargetPath != "src/auth" {
 		t.Errorf("expected target 'src/auth', got %q", cmd2.TargetPath)
 	}
-	if len(cmd2.Flags) != 2 {
-		t.Errorf("expected 2 flags, got %v", cmd2.Flags)
+	if cmd2.ReportFormat != "sarif" {
+		t.Errorf("expected format 'sarif', got %q", cmd2.ReportFormat)
+	}
+
+	expectedScanFlags := []string{"-y", "-c", "auth focus", "--unrestricted"}
+	if !reflect.DeepEqual(cmd2.ScanFlags, expectedScanFlags) {
+		t.Errorf("expected scan flags %v, got %v", expectedScanFlags, cmd2.ScanFlags)
 	}
 }
 
-func TestFindCommand_HasFormatFlag(t *testing.T) {
+func TestFindCommand_FormatFlags(t *testing.T) {
 	tests := []struct {
-		name     string
-		flags    []string
-		expected bool
+		name           string
+		flags          []string
+		expectedFormat string
 	}{
-		{"no flags", []string{}, false},
-		{"unrelated flags", []string{"--verbose", "--model", "gemini"}, false},
-		{"long format flag", []string{"--format", "json"}, true},
-		{"long format flag equal", []string{"--format=sarif"}, true},
-		{"short format flag", []string{"-f", "text"}, true},
-		{"short format flag equal", []string{"-f=json"}, true},
-		{"long help flag", []string{"--help"}, true},
-		{"short help flag", []string{"-h"}, true},
+		{"default format", []string{}, "json"},
+		{"long format with space", []string{"--format", "sarif"}, "sarif"},
+		{"long format with equal", []string{"--format=html"}, "html"},
+		{"short format with space", []string{"-f", "table"}, "table"},
+		{"short format with equal", []string{"-f=md"}, "md"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := NewFindCommand("src/auth", tc.flags...)
-			if cmd.HasFormatFlag() != tc.expected {
-				t.Errorf("expected HasFormatFlag() == %v, got %v for flags %v", tc.expected, cmd.HasFormatFlag(), tc.flags)
+			if cmd.ReportFormat != tc.expectedFormat {
+				t.Errorf("expected format %q, got %q", tc.expectedFormat, cmd.ReportFormat)
 			}
 		})
 	}
 }
 
-func TestFindCommand_Args(t *testing.T) {
+func TestFindCommand_FindArgs(t *testing.T) {
 	tests := []struct {
 		name     string
 		target   string
@@ -56,43 +61,65 @@ func TestFindCommand_Args(t *testing.T) {
 		expected []string
 	}{
 		{
-			name:     "defaults to '.' and injects '--format json'",
+			name:     "defaults to '.' with no scan flags",
 			target:   "",
-			flags:    []string{},
-			expected: []string{"find", ".", "--format", "json"},
+			flags:    []string{"--format", "json"},
+			expected: []string{"find", "."},
 		},
 		{
-			name:     "preserves target path and injects '--format json'",
+			name:     "forwards scanner flags and preserves target",
 			target:   "src/auth",
-			flags:    []string{"--model", "vertex:gemini"},
-			expected: []string{"find", "src/auth", "--model", "vertex:gemini", "--format", "json"},
+			flags:    []string{"-y", "--unrestricted", "-c", "check sqli", "-f", "sarif"},
+			expected: []string{"find", "src/auth", "-y", "--unrestricted", "-c", "check sqli"},
 		},
 		{
-			name:     "does not inject format when --format=sarif is present",
-			target:   "pkg/api",
-			flags:    []string{"--format=sarif"},
-			expected: []string{"find", "pkg/api", "--format=sarif"},
-		},
-		{
-			name:     "does not inject format when -f is present",
-			target:   ".",
-			flags:    []string{"-f", "text"},
-			expected: []string{"find", ".", "-f", "text"},
-		},
-		{
-			name:     "does not inject format when --help is present",
+			name:     "handles help flag",
 			target:   ".",
 			flags:    []string{"--help"},
-			expected: []string{"find", ".", "--help"},
+			expected: []string{"find", "--help"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := NewFindCommand(tc.target, tc.flags...)
-			args := cmd.Args()
+			args := cmd.FindArgs()
 			if !reflect.DeepEqual(args, tc.expected) {
-				t.Errorf("expected args %v, got %v", tc.expected, args)
+				t.Errorf("expected FindArgs %v, got %v", tc.expected, args)
+			}
+		})
+	}
+}
+
+func TestFindCommand_ReportArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		flags    []string
+		expected []string
+	}{
+		{
+			name:     "defaults to --format=json",
+			flags:    []string{},
+			expected: []string{"report", "--format=json"},
+		},
+		{
+			name:     "custom format flag",
+			flags:    []string{"-f", "sarif"},
+			expected: []string{"report", "--format=sarif"},
+		},
+		{
+			name:     "custom format flag with equals",
+			flags:    []string{"--format=html"},
+			expected: []string{"report", "--format=html"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewFindCommand(".", tc.flags...)
+			args := cmd.ReportArgs()
+			if !reflect.DeepEqual(args, tc.expected) {
+				t.Errorf("expected ReportArgs %v, got %v", tc.expected, args)
 			}
 		})
 	}

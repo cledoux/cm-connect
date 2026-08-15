@@ -3,6 +3,8 @@ package cmrunner
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,99 +64,213 @@ func TestResolveExecutable(t *testing.T) {
 	}
 }
 
-func TestRunner_RunFind_Success(t *testing.T) {
+func TestRunner_Run_NilCommand(t *testing.T) {
 	ctx := context.Background()
 	var stdout, stderr bytes.Buffer
+	r := NewRunner()
 
-	// Runner executing /bin/sh which outputs arguments
-	r := NewRunner(
-		WithExecutable("/bin/sh"),
-		WithWorkspace("."),
-	)
-
-	cmd := NewFindCommand("src/auth")
-	// RunFind will execute: /bin/sh find src/auth --format json
-	// /bin/sh will exit 0 without error when passed nonexistent file as first script arg,
-	// or let's create a small shell script that echoes args
-	tmpDir := t.TempDir()
-	scriptFile := filepath.Join(tmpDir, "mock-cm.sh")
-	if err := os.WriteFile(scriptFile, []byte("#!/bin/sh\necho \"args: $@\"\nexit 0\n"), 0755); err != nil {
-		t.Fatalf("failed to create mock script: %v", err)
+	code, err := r.Run(ctx, nil, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected error for nil command, got nil")
 	}
-
-	r.Executable = scriptFile
-	r.Workspace = tmpDir
-
-	code, err := r.RunFind(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if code != ExitClean {
-		t.Errorf("expected exit code %d, got %d", ExitClean, code)
-	}
-	if !strings.Contains(stdout.String(), "find src/auth --format json") {
-		t.Errorf("expected forwarded args in stdout, got %q", stdout.String())
+	if code != ExitUsage {
+		t.Errorf("expected exit code %d, got %d", ExitUsage, code)
 	}
 }
 
-func TestRunner_RunFind_NilCommand(t *testing.T) {
+// mockCustomCommand implements Command interface for testing polymorphism.
+type mockCustomCommand struct {
+	subcommand string
+	exitCode   int
+	output     string
+}
+
+func (m *mockCustomCommand) Subcommand() string {
+	return m.subcommand
+}
+
+func (m *mockCustomCommand) Execute(ctx context.Context, r *Runner, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	stdout.Write([]byte(m.output))
+	if m.exitCode != 0 {
+		return m.exitCode, errors.New("command failed")
+	}
+	return ExitClean, nil
+}
+
+func TestRunner_Run_PolymorphicCommand(t *testing.T) {
 	ctx := context.Background()
 	var stdout, stderr bytes.Buffer
-	tmpDir := t.TempDir()
+	r := NewRunner()
 
-	scriptFile := filepath.Join(tmpDir, "mock-cm.sh")
-	if err := os.WriteFile(scriptFile, []byte("#!/bin/sh\necho \"args: $@\"\nexit 0\n"), 0755); err != nil {
-		t.Fatalf("failed to create mock script: %v", err)
+	cmd := &mockCustomCommand{
+		subcommand: "custom",
+		exitCode:   ExitClean,
+		output:     "custom command executed",
 	}
 
-	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
-	code, err := r.RunFind(ctx, nil, strings.NewReader(""), &stdout, &stderr)
+	code, err := r.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
 	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if code != ExitClean {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
-	if !strings.Contains(stdout.String(), "find . --format json") {
-		t.Errorf("expected default find . args, got %q", stdout.String())
+	if stdout.String() != "custom command executed" {
+		t.Errorf("expected output 'custom command executed', got %q", stdout.String())
 	}
 }
 
-func TestRunner_RunFind_ExitCodes(t *testing.T) {
+func TestRunner_RunFind_TwoPhaseSuccess_WithFindings(t *testing.T) {
 	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
 	tmpDir := t.TempDir()
 
-	tests := []struct {
-		name         string
-		exitCode     int
-		expectedCode int
-	}{
-		{"findings exit 1", 1, ExitFindings},
-		{"usage exit 2", 2, ExitUsage},
-		{"fatal exit 7", 7, 7},
+	// Mock cm script that handles "find" (Phase 1) and "report" (Phase 2)
+	scriptFile := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "find" ]; then
+    echo "Scanning target $2..." >&2
+    echo "Discovered 1 finding" >&2
+    exit 0
+elif [ "$1" = "report" ]; then
+    echo '[{"FindingID":"f1","Title":"SQL Injection","Severity":"HIGH"}]'
+    echo "Session log: /tmp/session.log" >&2
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			scriptFile := filepath.Join(tmpDir, "mock-exit.sh")
-			scriptContent := "#!/bin/sh\nexit " + string(rune('0'+tc.exitCode)) + "\n"
-			if tc.exitCode == 7 {
-				scriptContent = "#!/bin/sh\nexit 7\n"
-			}
-			if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
-				t.Fatalf("failed to write script: %v", err)
-			}
+	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
+	cmd := NewFindCommand("src/auth", "-y")
 
-			r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
-			code, err := r.RunFind(ctx, NewFindCommand("."), strings.NewReader(""), &stdout, &stderr)
-			if err == nil {
-				t.Fatalf("expected error for exit code %d, got nil", tc.exitCode)
-			}
-			if code != tc.expectedCode {
-				t.Errorf("expected exit code %d, got %d", tc.expectedCode, code)
-			}
-		})
+	code, err := r.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Findings present -> exit code 1
+	if code != ExitFindings {
+		t.Errorf("expected exit code %d (ExitFindings), got %d", ExitFindings, code)
+	}
+
+	// Stdout must contain clean findings JSON
+	if !strings.Contains(stdout.String(), "SQL Injection") {
+		t.Errorf("expected findings JSON on stdout, got %q", stdout.String())
+	}
+
+	// Stderr must contain scanning progress and session logs
+	if !strings.Contains(stderr.String(), "Scanning target src/auth") {
+		t.Errorf("expected scanning progress on stderr, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Session log:") {
+		t.Errorf("expected session log on stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunner_RunFind_TwoPhaseSuccess_CleanCodebase(t *testing.T) {
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	scriptFile := filepath.Join(tmpDir, "mock-cm-clean.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "find" ]; then
+    echo "Scanning clean target $2..." >&2
+    exit 0
+elif [ "$1" = "report" ]; then
+    echo "[]"
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
+	}
+
+	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
+	cmd := NewFindCommand(".")
+
+	code, err := r.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Zero findings -> exit code 0
+	if code != ExitClean {
+		t.Errorf("expected exit code %d (ExitClean), got %d", ExitClean, code)
+	}
+	if strings.TrimSpace(stdout.String()) != "[]" {
+		t.Errorf("expected empty array on stdout, got %q", stdout.String())
+	}
+}
+
+func TestRunner_RunFind_Phase1FailureAbortsPhase2(t *testing.T) {
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	scriptFile := filepath.Join(tmpDir, "mock-cm-fail.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "find" ]; then
+    echo "Fatal auth error" >&2
+    exit 3
+elif [ "$1" = "report" ]; then
+    echo "Should never reach report"
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
+	}
+
+	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
+	cmd := NewFindCommand(".")
+
+	code, err := r.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected error on Phase 1 failure, got nil")
+	}
+	if code != 3 {
+		t.Errorf("expected exit code 3, got %d", code)
+	}
+	if stdout.Len() > 0 {
+		t.Errorf("expected empty stdout on Phase 1 failure, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Fatal auth error") {
+		t.Errorf("expected error message on stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunner_RunFind_HelpFlag(t *testing.T) {
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	scriptFile := filepath.Join(tmpDir, "mock-cm-help.sh")
+	scriptContent := `#!/bin/sh
+echo "Usage: cm find [command]"
+exit 0
+`
+	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
+	}
+
+	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
+	cmd := NewFindCommand(".", "--help")
+
+	code, err := r.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != ExitClean {
+		t.Errorf("expected exit code 0 for help, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "Usage: cm find") {
+		t.Errorf("expected help usage on stdout, got %q", stdout.String())
 	}
 }
 
@@ -163,7 +279,7 @@ func TestRunner_RunFind_NonExistentBinary(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	r := NewRunner(WithExecutable("/bin/non-existent-cm-bin-12345"))
-	code, err := r.RunFind(ctx, NewFindCommand("."), strings.NewReader(""), &stdout, &stderr)
+	code, err := r.Run(ctx, NewFindCommand("."), strings.NewReader(""), &stdout, &stderr)
 	if err == nil {
 		t.Fatalf("expected error for non-existent binary, got nil")
 	}
@@ -182,12 +298,18 @@ func TestRunner_RunFind_SignalForwarding(t *testing.T) {
 
 	scriptFile := filepath.Join(tmpDir, "mock-signal.sh")
 	scriptContent := `#!/bin/sh
-trap 'exit 0' TERM
-sleep 5 &
-wait $!
+if [ "$1" = "find" ]; then
+    trap 'exit 0' TERM INT
+    while true; do
+        sleep 0.05
+    done
+elif [ "$1" = "report" ]; then
+    echo "[]"
+    exit 0
+fi
 `
 	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
-		t.Fatalf("failed to write script: %v", err)
+		t.Fatalf("failed to create mock script: %v", err)
 	}
 
 	r := NewRunner(WithExecutable(scriptFile), WithWorkspace(tmpDir))
@@ -198,7 +320,7 @@ wait $!
 	}()
 
 	start := time.Now()
-	code, _ := r.RunFind(ctx, NewFindCommand("."), strings.NewReader(""), &stdout, &stderr)
+	code, _ := r.Run(ctx, NewFindCommand("."), strings.NewReader(""), &stdout, &stderr)
 	duration := time.Since(start)
 
 	if duration > 3*time.Second {
@@ -206,5 +328,30 @@ wait $!
 	}
 	if code != ExitClean {
 		t.Logf("signal terminated with code %d", code)
+	}
+}
+
+func TestEvaluateReportExitCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		format   string
+		data     string
+		expected int
+	}{
+		{"empty string", "json", "", ExitClean},
+		{"null string", "json", "null", ExitClean},
+		{"empty json array", "json", "[]", ExitClean},
+		{"json array with findings", "json", `[{"FindingID":"123"}]`, ExitFindings},
+		{"sarif empty results", "sarif", `{"runs":[{"results":[]}]}`, ExitClean},
+		{"sarif with results", "sarif", `{"runs":[{"results":[{"ruleId":"XXE"}]}]}`, ExitFindings},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			code := evaluateReportExitCode(tc.format, []byte(tc.data))
+			if code != tc.expected {
+				t.Errorf("expected %d, got %d for data %q", tc.expected, code, tc.data)
+			}
+		})
 	}
 }

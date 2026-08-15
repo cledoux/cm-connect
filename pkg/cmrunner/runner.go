@@ -2,11 +2,14 @@ package cmrunner
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -53,6 +56,7 @@ func WithEnv(env []string) Option {
 }
 
 // Runner is responsible for executing CodeMender commands in isolated process groups.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0005, REQ-0010, REQ-0013
 type Runner struct {
 	Executable string
 	Workspace  string
@@ -60,6 +64,7 @@ type Runner struct {
 }
 
 // NewRunner instantiates a Runner with sensible defaults and functional options.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001
 func NewRunner(opts ...Option) *Runner {
 	r := &Runner{
 		Executable: resolveExecutable(DefaultExecutable, "cm"),
@@ -82,7 +87,23 @@ func resolveExecutable(preferredPath, fallbackName string) string {
 	return preferredPath
 }
 
-// RunFind executes a FindCommand in an isolated process group with signal forwarding.
+// Run executes a Command implementation using the configured Runner environment.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0005, REQ-0010, REQ-0013
+func (r *Runner) Run(
+	ctx context.Context,
+	cmd Command,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) (int, error) {
+	if cmd == nil {
+		return ExitUsage, errors.New("cmrunner: command cannot be nil")
+	}
+	return cmd.Execute(ctx, r, stdin, stdout, stderr)
+}
+
+// RunFind executes a FindCommand via Run for backwards compatibility.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0005
 func (r *Runner) RunFind(
 	ctx context.Context,
 	cmd *FindCommand,
@@ -93,8 +114,29 @@ func (r *Runner) RunFind(
 	if cmd == nil {
 		cmd = NewFindCommand(".")
 	}
+	return r.Run(ctx, cmd, stdin, stdout, stderr)
+}
 
-	execCmd := exec.CommandContext(ctx, r.Executable, cmd.Args()...)
+// RunSubprocess executes a single command in an isolated process group with signal forwarding.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0010, REQ-0013
+func (r *Runner) RunSubprocess(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) (int, error) {
+	return r.runSubprocess(ctx, args, stdin, stdout, stderr)
+}
+
+func (r *Runner) runSubprocess(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) (int, error) {
+	execCmd := exec.CommandContext(ctx, r.Executable, args...)
 	execCmd.Dir = r.Workspace
 	execCmd.Env = r.Env
 	execCmd.Stdin = stdin
@@ -139,4 +181,45 @@ func (r *Runner) RunFind(
 	}
 
 	return ExitError, waitErr
+}
+
+// evaluateReportExitCode inspects the report payload to return ExitClean (0) or ExitFindings (1).
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0013
+func evaluateReportExitCode(format string, data []byte) int {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return ExitClean
+	}
+
+	formatLower := strings.ToLower(format)
+	if formatLower == "sarif" {
+		var sarifDoc struct {
+			Runs []struct {
+				Results []any `json:"results"`
+			} `json:"runs"`
+		}
+		if err := json.Unmarshal(data, &sarifDoc); err == nil {
+			for _, run := range sarifDoc.Runs {
+				if len(run.Results) > 0 {
+					return ExitFindings
+				}
+			}
+			return ExitClean
+		}
+	}
+
+	// Default JSON array parsing
+	var findings []any
+	if err := json.Unmarshal(data, &findings); err == nil {
+		if len(findings) > 0 {
+			return ExitFindings
+		}
+		return ExitClean
+	}
+
+	// Fallback for text/table/markdown
+	if len(trimmed) > 0 {
+		return ExitFindings
+	}
+	return ExitClean
 }
