@@ -38,8 +38,8 @@ explicitly scoped out of this proposal:
   mounted codebase and authentication inputs.
 - Create a statically-compiled Go entrypoint runner binary
   (`cmd/cm-runner/main.go` compiled to `/usr/local/bin/cm-runner`).
-- Automate default machine-readable output formatting (`--format json`) on
-  stdout.
+- Automate two-phase scan and reporting orchestration (`cm find` scan followed
+  by `cm report --format=json`) on stdout.
 - Ensure clean I/O separation (machine-readable findings JSON on stdout, logs
   and progress indicators on stderr).
 - Support idempotent argument multiplexing (`cm find`, `find`, or default
