@@ -2,8 +2,8 @@
 
 IMAGE_NAME ?= cm-runner
 TAG ?= latest
-USER_UID ?= 1000
-USER_GID ?= 1000
+USER_UID ?= $(shell id -u)
+USER_GID ?= $(shell id -g)
 
 .PHONY: help fmt lint test build integration-test clean
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 
@@ -23,6 +24,9 @@ func isTerminal(r io.Reader) bool {
 	return false
 }
 
+// execShellFn is the function used to exec the shell process (pluggable for testing).
+var execShellFn = syscall.Exec
+
 // printUsage emits the standard usage reference guide to the given writer.
 // Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0003
 func printUsage(w io.Writer) {
@@ -30,7 +34,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   cm-runner find [path] [-- [flags]]     Run CodeMender vulnerability scan on full repo or sub-path
-  cm-runner shell                        Launch interactive /bin/bash shell in /workspace (requires -it)
+  cm-runner shell [path]                 Launch interactive /bin/bash shell in /workspace (requires -it)
 
 Arguments:
   [path]               Scans repository at /workspace (default: '.') or scoped sub-path.
@@ -64,15 +68,28 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 			return cmrunner.ExitUsage
 		}
 
-		cmd := exec.Command("/bin/bash")
-		cmd.Dir = workspaceDir
-		cmd.Stdin = stdin
-		cmd.Stdout = stdout
-		cmd.Stderr = stderr
-		if err := cmd.Run(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				return exitErr.ExitCode()
+		targetDir := workspaceDir
+		if len(cleanArgs) > 1 {
+			relPath, err := normalizePath(workspaceDir, cleanArgs[1])
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: %v\n", err)
+				return cmrunner.ExitUsage
 			}
+			targetDir = filepath.Join(workspaceDir, relPath)
+		}
+
+		if err := os.Chdir(targetDir); err != nil {
+			fmt.Fprintf(stderr, "Error: failed to change directory to %s: %v\n", targetDir, err)
+			return cmrunner.ExitError
+		}
+
+		bashPath, err := exec.LookPath("bash")
+		if err != nil {
+			bashPath = "/bin/bash"
+		}
+
+		if err := execShellFn(bashPath, []string{"bash"}, os.Environ()); err != nil {
+			fmt.Fprintf(stderr, "Error: failed to execute interactive shell %s: %v\n", bashPath, err)
 			return cmrunner.ExitError
 		}
 		return cmrunner.ExitClean
