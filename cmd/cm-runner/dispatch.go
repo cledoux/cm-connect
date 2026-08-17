@@ -17,25 +17,19 @@ var (
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
 )
 
-// stripCMPrefix trims whitespace around tokens and drops any leading "cm" token.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0008
-func stripCMPrefix(rawArgs []string) []string {
-	clean := make([]string, 0, len(rawArgs))
-	for _, arg := range rawArgs {
-		trimmed := strings.TrimSpace(arg)
-		if trimmed != "" {
-			clean = append(clean, trimmed)
+// partitionDash splits raw arguments into tokens before '--' and tokens after '--'.
+// Governing: ADR-0002, SPEC-cm-batch-runner, REQ-0006
+func partitionDash(args []string) (beforeDash, afterDash []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
 		}
 	}
-
-	if len(clean) > 0 && clean[0] == "cm" {
-		return clean[1:]
-	}
-	return clean
+	return args, nil
 }
 
 // normalizePath verifies that targetPath exists within workspaceRoot and prevents path traversal.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0004
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0004
 func normalizePath(workspaceRoot, targetPath string) (string, error) {
 	trimmed := strings.TrimSpace(targetPath)
 	if trimmed == "" || trimmed == "." || trimmed == "./" {
@@ -79,19 +73,22 @@ func isHelpRequested(flags []string) bool {
 }
 
 // parseArgs parses raw CLI arguments into executable command sequences or shell parameters.
-// Handles prefix normalization, subcommand detection, flag splitting, and nested command parsing.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0006, REQ-0008, REQ-0009
+// Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
 func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
-	cleanArgs := stripCMPrefix(rawArgs)
-	if len(cleanArgs) == 0 {
+	if len(rawArgs) == 0 {
 		return nil, "", false, errMissingSubcommand
 	}
 
-	subcommand := cleanArgs[0]
+	subcommand := rawArgs[0]
+	if subcommand == "cm" {
+		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+	}
+
 	if subcommand == "shell" {
 		target := "."
-		if len(cleanArgs) > 1 {
-			target = cleanArgs[1]
+		if len(rawArgs) > 1 {
+			target = rawArgs[1]
 		}
 		relPath, err := normalizePath(workspaceRoot, target)
 		if err != nil {
@@ -104,39 +101,12 @@ func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command,
 		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 
-	remaining := cleanArgs[1:]
+	remaining := rawArgs[1:]
+	beforeDash, afterDash := partitionDash(remaining)
+
 	target := "."
-	var cmFlags []string
-
-	// Look for standard '--' separator
-	dashIndex := -1
-	for i, arg := range remaining {
-		if arg == "--" {
-			dashIndex = i
-			break
-		}
-	}
-
-	if dashIndex != -1 {
-		beforeDash := remaining[:dashIndex]
-		afterDash := remaining[dashIndex+1:]
-
-		for _, token := range beforeDash {
-			if !strings.HasPrefix(token, "-") && target == "." {
-				target = token
-			} else {
-				cmFlags = append(cmFlags, token)
-			}
-		}
-		cmFlags = append(cmFlags, afterDash...)
-	} else {
-		for _, token := range remaining {
-			if !strings.HasPrefix(token, "-") && target == "." {
-				target = token
-			} else {
-				cmFlags = append(cmFlags, token)
-			}
-		}
+	if len(beforeDash) > 0 {
+		target = beforeDash[0]
 	}
 
 	normalizedTarget, err := normalizePath(workspaceRoot, target)
@@ -144,21 +114,13 @@ func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command,
 		return nil, "", false, err
 	}
 
-	// Nested command parsing: ReportCommand extracts format flags, leftovers go to FindCommand
-	reportCmd := cmrunner.NewReportCommand()
-	scanFlags, err := reportCmd.SetArgs(cmFlags...)
-	if err != nil {
-		return nil, "", false, err
-	}
-
 	findCmd := cmrunner.NewFindCommand(normalizedTarget)
-	if _, err := findCmd.SetArgs(scanFlags...); err != nil {
-		return nil, "", false, err
-	}
+	findCmd.Flags = afterDash
 
 	if isHelpRequested(findCmd.Flags) {
 		return []cmrunner.Command{findCmd}, workspaceRoot, false, nil
 	}
 
+	reportCmd := cmrunner.NewReportCommand("json")
 	return []cmrunner.Command{findCmd, reportCmd}, workspaceRoot, false, nil
 }

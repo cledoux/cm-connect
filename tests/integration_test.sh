@@ -90,18 +90,20 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Test 3: Subcommand Normalization (REQ-0007)
+# Test 3: Strict Subcommand Dispatch & cm Prefix Rejection (REQ-0008)
 # ------------------------------------------------------------------------------
-log_test "Scenario 3: Subcommand normalization (cm prefix stripping)"
+log_test "Scenario 3: Strict subcommand dispatch (reject cm prefix)"
 set +e
-OUT_DIRECT=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" find non/existent/path 2>&1)
 OUT_PREFIXED=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" cm find non/existent/path 2>&1)
+EXIT_CODE=$?
 set -e
 
-if [[ "${OUT_DIRECT}" == "${OUT_PREFIXED}" ]] && [[ "${OUT_PREFIXED}" == *"scan target path does not exist in workspace"* ]]; then
-    pass "'cm find' and 'find' produce identical normalized dispatch behavior"
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT_PREFIXED}" == *"unrecognized subcommand 'cm'"* ]]; then
+    pass "Invocation with 'cm' prefix is rejected with exit code 2 and unrecognized subcommand error"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 10s"
 else
-    fail "Normalization failed. Direct: '${OUT_DIRECT}', Prefixed: '${OUT_PREFIXED}'"
+    fail "Expected exit code 2 with unrecognized subcommand error for 'cm find', got exit ${EXIT_CODE}. Output: ${OUT_PREFIXED}"
 fi
 
 # ------------------------------------------------------------------------------

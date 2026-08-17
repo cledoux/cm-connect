@@ -6,7 +6,7 @@ import (
 )
 
 // FindCommand encapsulates parameters for the 'cm find' vulnerability scan phase.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0004, REQ-0005
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0004, REQ-0005, REQ-0006
 type FindCommand struct {
 	TargetPath string
 	Flags      []string
@@ -41,7 +41,7 @@ func (c *FindCommand) Cmd() []string {
 }
 
 // ReportCommand encapsulates parameters for the 'cm report' output synthesis phase.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0005, REQ-0006
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0005, REQ-0006
 type ReportCommand struct {
 	Format string
 	Flags  []string
@@ -58,31 +58,10 @@ func NewReportCommand(format ...string) *ReportCommand {
 	}
 }
 
-// SetArgs parses CLI flags, extracting recognized format flags and returning unrecognized flags.
+// SetArgs sets extra flags for ReportCommand.
 func (c *ReportCommand) SetArgs(args ...string) ([]string, error) {
-	var unknown []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "-f" || arg == "--format" || arg == "-format" {
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("flag needs an argument: %s", arg)
-			}
-			c.Format = args[i+1]
-			i++
-		} else if strings.HasPrefix(arg, "--format=") {
-			c.Format = strings.TrimPrefix(arg, "--format=")
-		} else if strings.HasPrefix(arg, "-format=") {
-			c.Format = strings.TrimPrefix(arg, "-format=")
-		} else if strings.HasPrefix(arg, "-f=") {
-			c.Format = strings.TrimPrefix(arg, "-f=")
-		} else {
-			unknown = append(unknown, arg)
-		}
-	}
-	if strings.TrimSpace(c.Format) == "" {
-		c.Format = "json"
-	}
-	return unknown, nil
+	c.Flags = append(c.Flags, args...)
+	return nil, nil
 }
 
 // Cmd returns the complete command argument vector for 'cm report'.
