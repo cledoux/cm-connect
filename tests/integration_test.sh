@@ -241,14 +241,17 @@ log_test "Scenario 11: Explicit shell subcommand TTY enforcement"
 set +e
 OUT=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" shell 2>&1)
 EXIT_CODE=$?
+OUT_WRAPPER=$(run_with_timeout 10 ./bin/cm-shell 2>&1 < /dev/null)
+WRAPPER_EXIT_CODE=$?
 set -e
 
-if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"requires an interactive terminal"* ]]; then
-    pass "Executing 'shell' without pseudo-TTY exits with code 2 and descriptive TTY error"
-elif [ ${EXIT_CODE} -eq 124 ]; then
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"requires an interactive terminal"* ]] && \
+   [ ${WRAPPER_EXIT_CODE} -eq 2 ] && [[ "${OUT_WRAPPER}" == *"requires an interactive terminal"* ]]; then
+    pass "Executing 'shell' and ./bin/cm-shell without pseudo-TTY exits with code 2 and descriptive TTY error"
+elif [ ${EXIT_CODE} -eq 124 ] || [ ${WRAPPER_EXIT_CODE} -eq 124 ]; then
     fail "Shell subcommand test timed out after 10s"
 else
-    fail "Shell subcommand without TTY expected exit 2, got ${EXIT_CODE}. Output: ${OUT}"
+    fail "Shell subcommand without TTY expected exit 2, got container=${EXIT_CODE} wrapper=${WRAPPER_EXIT_CODE}. Output: ${OUT}"
 fi
 
 echo "======================================================================"

@@ -1,4 +1,4 @@
-# CodeMender Interactive Sandbox (`cm-connect`)
+# CodeMender Connect (`cm-connect`)
 
 `cm-connect` provides an unprivileged, userspace Docker sandbox for running the
 [CodeMender](https://docs.cloud.google.com/gemini-enterprise-agent-platform/codemender/set-up-environment)
@@ -23,7 +23,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 1. Build the Sandbox Image
+## 1. Build the Runner Image
 
 Build the Docker image using the `Makefile`:
 
@@ -31,78 +31,67 @@ Build the Docker image using the `Makefile`:
 make build
 ```
 
-This compiles the `cm-sandbox:latest` image, installs build dependencies,
+This compiles the `cm-runner:latest` image, installs runtime dependencies,
 configures the unprivileged `codemender` user (UID 1000), and provisions the
-official `cm` CLI from Artifact Registry.
+official `cm` CLI.
 
 ______________________________________________________________________
 
-## 2. Launching the Sandbox
+## 2. Using `cm-runner` and `cm-shell`
 
-Use `bin/cm-sandbox` to run the container.
+### Interactive Shell (`bin/cm-shell`)
 
-### Interactive Shell (Default)
-
-From any codebase directory you want to scan:
+To drop into an interactive `/bin/bash` shell in `/workspace` as the
+`codemender` user:
 
 ```bash
-/path/to/cm-connect/bin/cm-sandbox
+/path/to/cm-connect/bin/cm-shell
 ```
-
-This drops you directly into an interactive `/bin/bash` shell in `/workspace` as
-the `codemender` user.
 
 > **Tip:** Add `cm-connect/bin` to your system `$PATH` or create an alias:
 >
 > ```bash
-> alias cm-sandbox="/path/to/cm-connect/bin/cm-sandbox"
+> alias cm-shell="/path/to/cm-connect/bin/cm-shell"
 > ```
 
-### Direct Command Execution
+### Headless & Batch Scanning (`bin/cm-runner`)
 
-You can also pass arguments directly through to the container without entering
-an interactive shell:
+Use `bin/cm-runner` for automated, non-interactive execution and CI/CD
+pipelines:
 
 ```bash
-# Verify cloud connectivity and initialize workspace
-./bin/cm-sandbox cm init --verify
+# Scan full workspace (default target '.')
+./bin/cm-runner find
 
-# Scan codebase for security vulnerabilities
-./bin/cm-sandbox cm find
+# Scan scoped sub-path
+./bin/cm-runner find src/auth
 
-# Run dynamic verification on findings
-./bin/cm-sandbox cm verify
-
-# Generate security patches
-./bin/cm-sandbox cm fix
-
-# Export findings report to JSON
-./bin/cm-sandbox cm report -f json > report.json
+# Forward CodeMender flags
+./bin/cm-runner find -- --format=sarif -y
 ```
 
 ______________________________________________________________________
 
 ## 3. How Volume Mounts & State Persistence Work
 
-When `bin/cm-sandbox` runs, it mounts three host directories into the container:
+When `bin/cm-runner` or `bin/cm-shell` runs, it mounts host directories into the
+container:
 
-| Host Path | Container Path | Permissions | Purpose |
-| :--- | :--- | :--- | :--- |
-| `$(pwd)` | `/workspace` | `rw` | Target source code to analyze and patch. |
-| `${HOME}/.codemender` | `/home/codemender/.codemender` | `rw` | Persistent state, session tokens, and configurations. |
-| `${HOME}/.config/gcloud` | `/home/codemender/.config/gcloud` | `ro` | Application Default Credentials (ADC) for Vertex AI. |
+| Host Path                | Container Path                    | Permissions | Purpose                                             |
+| :----------------------- | :-------------------------------- | :---------- | :-------------------------------------------------- |
+| `$(pwd)`                 | `/workspace`                      | `rw`        | Target source code to analyze and patch.            |
+| `${HOME}/.config/gcloud` | `/home/codemender/.config/gcloud` | `ro`        | Application Default Credentials (ADC) for Vertex AI |
 
 ### Non-Root Userspace Isolation
 
 - The container runs as user `codemender` (`UID=1000`, `GID=1000`).
-- Any files or patches created in `/workspace` or `~/.codemender` are owned by
-  your standard user on the host, avoiding `root:root` permission issues.
+- Any files or patches created in `/workspace` are owned by your standard user
+  on the host, avoiding `root:root` permission issues.
 
----
+______________________________________________________________________
 
 ## 4. Environment Overrides
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `CM_IMAGE_NAME` | `cm-sandbox:latest` | Custom Docker image name/tag to execute. |
-
+| Variable        | Default            | Description                             |
+| :-------------- | :----------------- | :-------------------------------------- |
+| `CM_IMAGE_NAME` | `cm-runner:latest` | Custom Docker image name/tag to execute |

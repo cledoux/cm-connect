@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# CodeMender Interactive Shell Runner (Host Wrapper)
+# Governing: REQ-0009
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "${SCRIPT_DIR}/cm-runner" shell "$@"
