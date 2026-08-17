@@ -4,7 +4,9 @@ status: accepted
 category: runner
 name: cm-batch-runner
 governing_proposal: cm-batch-runner
-governing_adr: adrs/ADR-0001.md
+governing_adrs:
+  - adrs/ADR-0001.md
+  - adrs/ADR-0002.md
 ---
 
 # CodeMender Headless Batch Scanner Container Specification (`find`)
@@ -13,7 +15,8 @@ governing_adr: adrs/ADR-0001.md
 
 The `cm-batch-runner` capability defines a headless, deterministic, and
 completely stateless Docker scanner container protocol for CodeMender (`cm`),
-implementing [ADR-0001](../../../../adrs/ADR-0001.md).
+implementing [ADR-0001](../../../../adrs/ADR-0001.md) and
+[ADR-0002](../../../../adrs/ADR-0002.md).
 
 The container provides a structured **Host $\\leftrightarrow$ Container
 Communication Protocol** dedicated to the **`find`** vulnerability discovery
@@ -24,20 +27,27 @@ emits formatted findings). The `cm-runner` entrypoint orchestrates this
 two-phase execution transparently to produce clean machine-readable findings on
 `stdout`:
 
+1. **Exact Subcommand Dispatch (`os.Args[1]`):** `cm-runner` requires an
+   explicit subcommand (`find`, `shell`) as `os.Args[1]`. Redundant `cm`
+   prefixes (e.g. `docker run <image> cm find`) are rejected as invalid
+   subcommands.
+1. **Dedicated Structured JSON Output:** `cm-runner find` is dedicated strictly
+   to machine-readable JSON output on `stdout`, always invoking
+   `cm report --format=json`. It does not accept or process format flags
+   (`--format`, `-f`).
+1. **Clean `--` Delimiter Partitioning:** The CLI contract separates the
+   optional positional target path from unowned subprocess flags via `--`:
+   `cm-runner find [path] [-- <cm-find-flags...>]`.
 1. **Workspace & Scan Target Distinction:**
    - **Repository Root (`/workspace`):** The entire repository is mounted to
      `/workspace` (`WORKDIR`) so CodeMender retains complete repository-wide
      context (build files, dependencies, configurations).
    - **Scan Target Scope:** Supports scanning the entire repository by default
-     (`.`), or scoping analysis strictly to a sub-tree/module (e.g.
-     `./src/auth`).
+     (`.`), or scoping analysis strictly to a sub-tree/module (e.g. `src/auth`).
 1. **Two-Phase Scan & Report Orchestration:** Executes `cm find` against the
    target codebase while routing diagnostic progress to `stderr`, followed
-   immediately by `cm report --format <fmt>` to extract structured findings
+   immediately by `cm report --format=json` to extract structured findings
    directly to `stdout`.
-1. **Structured Machine-Readable Output by Default:** Defaults to JSON
-   (`cm report --format=json`), outputting a structured array of findings. Also
-   supports alternative format overrides (e.g. `sarif`, `table`, `html`, `md`).
 1. **Clean Stream Separation:** Emits pure structured data payloads strictly on
    `stdout`, routes all progress spinners, LLM interaction notices, session
    logs, and diagnostic traces to `stderr`.
@@ -90,10 +100,10 @@ ______________________________________________________________________
 
 ### REQ-0003: Mandatory Subcommand Requirement (No Default Action)
 
-`cm-runner` MUST require an explicit subcommand at invocation. If the container
-is launched without arguments, or with an unrecognized subcommand, `cm-runner`
-MUST NOT execute a default command; it MUST print a helpful usage guide to
-`stderr` and terminate immediately with exit code 2.
+`cm-runner` MUST require an explicit subcommand at invocation (`os.Args[1]`). If
+the container is launched without arguments, or with an unrecognized subcommand,
+`cm-runner` MUST NOT execute a default command; it MUST print a helpful usage
+guide to `stderr` and terminate immediately with exit code 2.
 
 #### Scenario: Error on invocation without arguments
 
@@ -121,9 +131,9 @@ and the target scan path argument:
    path argument, `cm-runner` MUST automatically supply `.` as the scan target,
    scanning the entire mounted codebase in `/workspace`.
 1. **Scoped Sub-Path Scan:** If `find` is invoked with a specific relative or
-   absolute sub-path (e.g. `find ./src/auth` or `find pkg/api`), `cm-runner`
-   MUST validate that the path exists within `/workspace` and scope the scan to
-   that specific directory/file while maintaining the full repository context in
+   absolute sub-path (e.g. `find src/auth` or `find pkg/api`), `cm-runner` MUST
+   validate that the path exists within `/workspace` and scope the scan to that
+   specific directory/file while maintaining the full repository context in
    `/workspace`.
 1. **Invalid Path Error:** If the requested sub-path does not exist within
    `/workspace`, `cm-runner` MUST terminate immediately with exit code 2 and
@@ -153,6 +163,14 @@ and the target scan path argument:
   `stderr`:
   `Error: scan target path 'non/existent/path' does not exist in /workspace`.
 
+#### Scenario: Error on path traversal outside workspace boundary
+
+- **GIVEN** a container invocation
+  `docker run --rm -v $(pwd):/workspace <image> find ../../etc/passwd`
+- **WHEN** the path escapes the workspace root boundary
+- **THEN** `cm-runner` MUST exit with status code 2 and emit a path traversal
+  error to `stderr`.
+
 ______________________________________________________________________
 
 ### REQ-0005: Two-Phase Scan & Structured Report Synthesis
@@ -166,8 +184,8 @@ pipeline:
    `stderr`. Discovered findings MUST be persisted into CodeMender's SQLite
    state database (`/home/codemender/.codemender/state.db`).
 1. **Phase 2 (Report Query & Synthesis):** Upon successful completion of Phase
-   1, `cm-runner` MUST execute `/usr/local/bin/cm report --format <fmt>` to
-   query the state database and emit the resulting machine-readable payload
+   1, `cm-runner` MUST execute `/usr/local/bin/cm report --format=json` to query
+   the state database and emit the resulting machine-readable JSON payload
    directly to `stdout`.
 1. **Scan Failure Handling:** If Phase 1 fails (non-zero exit code $>1$),
    `cm-runner` MUST abort the pipeline, skip Phase 2, and propagate the fatal
@@ -189,38 +207,57 @@ pipeline:
 - **AND** `cm report` MUST NOT execute.
 - **AND** `cm-runner` MUST exit with status code $>2$.
 
+#### Scenario: Report phase failure propagates fatal error
+
+- **GIVEN** a successful Phase 1 scan
+- **WHEN** Phase 2 (`cm report`) encounters a fatal database or execution error
+- **THEN** `cm-runner` MUST terminate immediately with exit code $>2$.
+
 ______________________________________________________________________
 
-### REQ-0006: Output Format Configuration (`json` Default, `sarif`, `table`, `html`, `md`)
+### REQ-0006: Dedicated Machine-Readable JSON Output & Passthrough Partitioning via Double-Dash
 
-1. **Default Format:** `cm-runner find` MUST default to `--format=json` for
-   Phase 2 report generation, outputting a valid JSON array of finding objects.
-1. **Format Flag Forwarding:** If the caller provides an explicit format flag
-   (e.g. `--format sarif`, `-f sarif`, `--format=sarif`, `-f=sarif`,
-   `--format md`, `--format html`, or `--format table`), `cm-runner` MUST
-   capture the requested format and apply `--format=<fmt>` to the `cm report`
-   invocation in Phase 2.
-1. **Scan Flag Forwarding:** Flags provided to `cm-runner find` that are not
-   format flags (e.g. `-c`, `--context`, `-y`, `--yes`, `--unrestricted`) MUST
-   be forwarded to Phase 1 (`cm find`).
+1. **Strict JSON Output on `stdout`:** `cm-runner find` MUST execute Phase 2 as
+   `/usr/local/bin/cm report --format=json` to emit a valid, structured JSON
+   array of finding objects on `stdout`. `find` MUST NOT accept or process
+   output format flags (`--format`, `-f`).
+1. **Scan Flag Passthrough via `--`:** Scan-specific flags intended for
+   `cm find` (e.g. `-c`, `-y`, `--unrestricted`) MUST be passed following the
+   POSIX `--` delimiter (`cm-runner find [path] -- [scan flags]`) and forwarded
+   verbatim to Phase 1 (`cm find`).
 1. **No Report Filter Support:** `cm-runner find` MUST NOT support or forward
    report filtering flags (such as `--severity`, `--status`, `--session`,
    `--sort`, `--patches`, `--artifacts`). The find pipeline always outputs the
-   full findings report in the specified format.
+   full findings report in JSON.
 
 #### Scenario: Default JSON report formatting
 
 - **GIVEN** a container invocation `cm-runner find`
-- **WHEN** no format flag is specified
+- **WHEN** no scan flags are specified
 - **THEN** Phase 2 MUST invoke `cm report --format=json` and emit JSON on
   `stdout`.
 
-#### Scenario: Explicit SARIF format override
+#### Scenario: Scan flag passthrough after double-dash
 
-- **GIVEN** a container invocation `cm-runner find -f sarif`
-- **WHEN** Phase 2 executes
-- **THEN** `cm report --format=sarif` MUST execute and emit standard SARIF 2.1.0
-  JSON on `stdout`.
+- **GIVEN** a container invocation
+  `cm-runner find src/auth -- -c 5 --unrestricted`
+- **WHEN** the command executes
+- **THEN** Phase 1 MUST invoke `cm find src/auth -c 5 --unrestricted`.
+- **AND** Phase 2 MUST invoke `cm report --format=json`.
+
+#### Scenario: Trailing double-dash without following arguments
+
+- **GIVEN** a container invocation `cm-runner find src/auth --`
+- **WHEN** no scan flags follow the double-dash delimiter
+- **THEN** Phase 1 MUST invoke `cm find src/auth` without trailing empty tokens.
+
+#### Scenario: Help flag invocation
+
+- **GIVEN** a container invocation `cm-runner find --help`
+- **WHEN** the help flag is passed
+- **THEN** `cm-runner` MUST print find usage
+  (`Usage: cm-runner find [path] [-- <scan flags>]`) to `stderr` and terminate
+  cleanly with exit code 0.
 
 ______________________________________________________________________
 
@@ -235,13 +272,12 @@ data payloads from operational diagnostics:
    - **Authentication Channel:** Injected via `CLOUDSDK_AUTH_ACCESS_TOKEN` env
      var, `GOOGLE_APPLICATION_CREDENTIALS` config file, or mounted ADC directory
      (`/home/codemender/.config/gcloud:ro`).
-   - **Command & Target Channel:** Explicit CLI subcommand and optional sub-path
-     targets (`find [path] [flags]`, `shell`).
+   - **Command & Target Channel:** Explicit CLI subcommand and optional target
+     path (`find [path] [-- <scan flags>]`, `shell`).
 1. **Output Channels (Container $\\rightarrow$ Host):**
    - **Data Payload Stream (`stdout`):** Exclusively reserved for structured
-     machine-readable payloads emitted by `cm report` (JSON findings array or
-     SARIF object). Guaranteed to contain zero ANSI escape codes, banner
-     headers, or diagnostic log lines.
+     machine-readable JSON findings array emitted by `cm report`. Guaranteed to
+     contain zero ANSI escape codes, banner headers, or diagnostic log lines.
    - **Diagnostics Stream (`stderr`):** Exclusively captures operational logs,
      scanning progress indicators, LLM interaction notices, session log paths,
      and error traces from both `cm find` and `cm report`.
@@ -259,20 +295,21 @@ data payloads from operational diagnostics:
 
 ______________________________________________________________________
 
-### REQ-0008: Subcommand Normalization (`cm` Prefix Stripping)
+### REQ-0008: Strict Subcommand Dispatch (`cm` Prefix Rejection)
 
-`cm-runner` MUST accept both direct subcommands (e.g. `docker run <image> find`)
-and prefixed command invocations (e.g. `docker run <image> cm find`),
-automatically stripping any redundant leading `cm` token.
+`cm-runner` MUST require direct subcommand invocation (`os.Args[1] == "find"` or
+`os.Args[1] == "shell"`). `cm-runner` MUST NOT perform prefix-stripping
+heuristics. Invocations prefixed with `cm` (e.g. `docker run <image> cm find`)
+MUST be rejected immediately with exit code 2 and a descriptive error message.
 
-#### Scenario: Invoke with cm prefix
+#### Scenario: Reject invocation with cm prefix
 
 - **GIVEN** a container execution
 - **WHEN** passing arguments `cm find src/auth`
-- **THEN** `cm-runner` MUST normalize the arguments and execute the find
-  pipeline on `src/auth`.
+- **THEN** `cm-runner` MUST exit with code 2 and emit an error message to
+  `stderr`: `Error: unrecognized subcommand 'cm'`.
 
-#### Scenario: Invoke without cm prefix
+#### Scenario: Accept direct subcommand invocation
 
 - **GIVEN** a container execution
 - **WHEN** passing arguments `find src/auth`
@@ -384,11 +421,11 @@ ______________________________________________________________________
 1. `cm-runner` MUST evaluate findings from the generated report to determine the
    container exit code:
    - `0`: Scan completed successfully, zero vulnerabilities detected (empty
-     findings array `[]` or null in JSON, or empty `results` in SARIF).
+     findings array `[]` or null in JSON).
    - `1`: Scan completed successfully, one or more vulnerabilities detected
      (actionable CI PR gating signal).
    - `2`: CLI usage / invocation error (missing subcommand, non-existent target
-     path, unrecognized flag, or missing TTY on `shell`).
+     path, unrecognized flag, `cm` prefix, or missing TTY on `shell`).
    - `> 2`: Fatal tooling, execution, or authentication error during `cm find`
      or `cm report`.
 
