@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"unsafe"
 
@@ -23,6 +22,9 @@ func isTerminal(r io.Reader) bool {
 	}
 	return false
 }
+
+// isTerminalFn is the function used to detect TTY (pluggable for testing).
+var isTerminalFn = isTerminal
 
 // execShellFn is the function used to exec the shell process (pluggable for testing).
 var execShellFn = syscall.Exec
@@ -54,28 +56,17 @@ Exit Codes:
 // run parses arguments and orchestrates execution of the target subcommand.
 // Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0003, REQ-0005, REQ-0009
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
-	cleanArgs := stripCMPrefix(args)
-	if len(cleanArgs) == 0 {
-		fmt.Fprintf(stderr, "Error: %v\n", errMissingSubcommand)
+	cmds, targetDir, isShell, err := parseArgs(workspaceDir, args)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
 		printUsage(stderr)
 		return cmrunner.ExitUsage
 	}
 
-	subcommand := cleanArgs[0]
-	if subcommand == "shell" {
-		if !isTerminal(stdin) {
+	if isShell {
+		if !isTerminalFn(stdin) {
 			fmt.Fprintln(stderr, "Error: 'shell' subcommand requires an interactive terminal. Please run with 'docker run -it <image> shell'")
 			return cmrunner.ExitUsage
-		}
-
-		targetDir := workspaceDir
-		if len(cleanArgs) > 1 {
-			relPath, err := normalizePath(workspaceDir, cleanArgs[1])
-			if err != nil {
-				fmt.Fprintf(stderr, "Error: %v\n", err)
-				return cmrunner.ExitUsage
-			}
-			targetDir = filepath.Join(workspaceDir, relPath)
 		}
 
 		if err := os.Chdir(targetDir); err != nil {
@@ -95,20 +86,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		return cmrunner.ExitClean
 	}
 
-	cmd, err := parseArgs(workspaceDir, cleanArgs)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		printUsage(stderr)
-		return cmrunner.ExitUsage
-	}
-
 	runner := cmrunner.NewRunner(
 		cmrunner.WithExecutable(cmPath),
 		cmrunner.WithWorkspace(workspaceDir),
 	)
 
 	ctx := context.Background()
-	code, _ := runner.RunFind(ctx, cmd, stdin, stdout, stderr)
+	code, _ := runner.RunSequence(ctx, cmds, stdin, stdout, stderr)
 	return code
 }
 

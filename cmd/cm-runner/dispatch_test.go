@@ -5,8 +5,11 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
+
+	"cm-connect/pkg/cmrunner"
 )
 
 // generateRandomStrings produces a slice of n random non-empty alphanumeric strings without leading 'cm'.
@@ -85,17 +88,12 @@ func TestStripCMPrefix_Randomized(t *testing.T) {
 	seed := time.Now().UnixNano()
 	r := rand.New(rand.NewSource(seed))
 
-	// Test 100 randomized token lists of varying lengths (1 to 20 tokens)
 	for i := 0; i < 100; i++ {
 		numTokens := r.Intn(20) + 1
 		randomTokens := generateRandomStrings(r, numTokens)
-
-		// Input is ["cm", ...randomTokens]
 		input := append([]string{"cm"}, randomTokens...)
-
 		result := stripCMPrefix(input)
 
-		// Verification: Output must exactly equal randomTokens
 		if len(result) != len(randomTokens) {
 			t.Fatalf("FAILED with seed %d\nInput was: %v\nExpected len %d, got len %d: %v",
 				seed, input, len(randomTokens), len(result), result)
@@ -221,12 +219,16 @@ func TestParseArgs(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		args           []string
-		expectedTarget string
-		expectedFlags  []string
-		expectError    bool
-		expectedError  error
+		name              string
+		args              []string
+		expectedCmdCount  int
+		expectedTarget    string
+		expectedFormat    string
+		expectedScanFlags []string
+		expectedIsShell   bool
+		expectedTargetDir string
+		expectError       bool
+		expectedError     error
 	}{
 		{
 			name:          "empty args returns missing subcommand error",
@@ -259,46 +261,74 @@ func TestParseArgs(t *testing.T) {
 			expectedError: errInvalidSubcommand,
 		},
 		{
-			name:           "find with no target path defaults to dot",
-			args:           []string{"find"},
-			expectedTarget: ".",
-			expectedFlags:  nil,
-			expectError:    false,
+			name:              "shell subcommand defaults to workspace root",
+			args:              []string{"shell"},
+			expectedIsShell:   true,
+			expectedTargetDir: tmpDir,
+			expectError:       false,
 		},
 		{
-			name:           "cm find with no target path defaults to dot",
-			args:           []string{"cm", "find"},
-			expectedTarget: ".",
-			expectedFlags:  nil,
-			expectError:    false,
+			name:              "shell subcommand with scoped path",
+			args:              []string{"cm", "shell", "src/auth"},
+			expectedIsShell:   true,
+			expectedTargetDir: filepath.Join(tmpDir, "src/auth"),
+			expectError:       false,
 		},
 		{
-			name:           "find with scoped sub-path",
-			args:           []string{"find", "src/auth"},
-			expectedTarget: "src/auth",
-			expectedFlags:  nil,
-			expectError:    false,
+			name:             "find with no target path defaults to dot and json",
+			args:             []string{"find"},
+			expectedCmdCount: 2,
+			expectedTarget:   ".",
+			expectedFormat:   "json",
+			expectError:      false,
 		},
 		{
-			name:           "find with double-dash separating forwarded flags",
-			args:           []string{"find", "src/auth", "--", "--format=sarif", "--model", "vertex:gemini"},
-			expectedTarget: "src/auth",
-			expectedFlags:  []string{"--format=sarif", "--model", "vertex:gemini"},
-			expectError:    false,
+			name:             "cm find with no target path defaults to dot",
+			args:             []string{"cm", "find"},
+			expectedCmdCount: 2,
+			expectedTarget:   ".",
+			expectedFormat:   "json",
+			expectError:      false,
 		},
 		{
-			name:           "find with double-dash and no explicit path defaults to dot",
-			args:           []string{"find", "--", "--format=json"},
-			expectedTarget: ".",
-			expectedFlags:  []string{"--format=json"},
-			expectError:    false,
+			name:             "find with scoped sub-path",
+			args:             []string{"find", "src/auth"},
+			expectedCmdCount: 2,
+			expectedTarget:   "src/auth",
+			expectedFormat:   "json",
+			expectError:      false,
 		},
 		{
-			name:           "find with flags without double dash",
-			args:           []string{"find", "--format=sarif", "src/auth"},
-			expectedTarget: "src/auth",
-			expectedFlags:  []string{"--format=sarif"},
-			expectError:    false,
+			name:              "find with double-dash separating forwarded flags",
+			args:              []string{"find", "src/auth", "--", "--format=sarif", "-y"},
+			expectedCmdCount:  2,
+			expectedTarget:    "src/auth",
+			expectedFormat:    "sarif",
+			expectedScanFlags: []string{"-y"},
+			expectError:       false,
+		},
+		{
+			name:             "find with double-dash and no explicit path defaults to dot",
+			args:             []string{"find", "--", "--format=json"},
+			expectedCmdCount: 2,
+			expectedTarget:   ".",
+			expectedFormat:   "json",
+			expectError:      false,
+		},
+		{
+			name:             "find with flags without double dash",
+			args:             []string{"find", "--format=sarif", "src/auth"},
+			expectedCmdCount: 2,
+			expectedTarget:   "src/auth",
+			expectedFormat:   "sarif",
+			expectError:      false,
+		},
+		{
+			name:             "find with help flag returns only find command",
+			args:             []string{"find", "--help"},
+			expectedCmdCount: 1,
+			expectedTarget:   ".",
+			expectError:      false,
 		},
 		{
 			name:          "find with non-existent sub-path returns path not found error",
@@ -310,10 +340,10 @@ func TestParseArgs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, err := parseArgs(tmpDir, tc.args)
+			cmds, targetDir, isShell, err := parseArgs(tmpDir, tc.args)
 			if tc.expectError {
 				if err == nil {
-					t.Fatalf("expected error, got command: %+v", cmd)
+					t.Fatalf("expected error, got commands: %+v", cmds)
 				}
 				if tc.expectedError != nil && !errors.Is(err, tc.expectedError) {
 					t.Errorf("expected sentinel error %v, got %v", tc.expectedError, err)
@@ -322,15 +352,37 @@ func TestParseArgs(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if cmd.TargetPath != tc.expectedTarget {
-					t.Errorf("expected target %q, got %q", tc.expectedTarget, cmd.TargetPath)
+				if isShell != tc.expectedIsShell {
+					t.Errorf("expected isShell %v, got %v", tc.expectedIsShell, isShell)
 				}
-				if len(cmd.Flags) != len(tc.expectedFlags) {
-					t.Fatalf("expected flags %v, got %v", tc.expectedFlags, cmd.Flags)
+				if tc.expectedIsShell {
+					if targetDir != tc.expectedTargetDir {
+						t.Errorf("expected targetDir %q, got %q", tc.expectedTargetDir, targetDir)
+					}
+					return
 				}
-				for i := range cmd.Flags {
-					if cmd.Flags[i] != tc.expectedFlags[i] {
-						t.Errorf("flag[%d]: expected %q, got %q", i, tc.expectedFlags[i], cmd.Flags[i])
+
+				if len(cmds) != tc.expectedCmdCount {
+					t.Fatalf("expected %d commands, got %d", tc.expectedCmdCount, len(cmds))
+				}
+				findCmd, ok := cmds[0].(*cmrunner.FindCommand)
+				if !ok {
+					t.Fatalf("expected cmds[0] to be *cmrunner.FindCommand, got %T", cmds[0])
+				}
+				if findCmd.TargetPath != tc.expectedTarget {
+					t.Errorf("expected target %q, got %q", tc.expectedTarget, findCmd.TargetPath)
+				}
+				if tc.expectedScanFlags != nil && !reflect.DeepEqual(findCmd.Flags, tc.expectedScanFlags) {
+					t.Errorf("expected scan flags %v, got %v", tc.expectedScanFlags, findCmd.Flags)
+				}
+
+				if tc.expectedCmdCount > 1 {
+					reportCmd, ok := cmds[1].(*cmrunner.ReportCommand)
+					if !ok {
+						t.Fatalf("expected cmds[1] to be *cmrunner.ReportCommand, got %T", cmds[1])
+					}
+					if reportCmd.Format != tc.expectedFormat {
+						t.Errorf("expected format %q, got %q", tc.expectedFormat, reportCmd.Format)
 					}
 				}
 			}
