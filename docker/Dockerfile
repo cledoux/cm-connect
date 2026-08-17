@@ -9,6 +9,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /app/bin/
 # Stage 2: Runtime image (Debian Bookworm Slim)
 FROM debian:bookworm-slim
 
+# TODO(#19): Validate or resolve container user UID/GID mapping in CI/CD pipeline vs workstation.
+# Pre-built registry images have static UIDs, whereas workstation mode requires dynamic host UIDs.
 ARG USER_UID=1000
 ARG USER_GID=1000
 
