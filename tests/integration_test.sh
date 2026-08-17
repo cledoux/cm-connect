@@ -234,6 +234,23 @@ else
     fail "Container failed to terminate cleanly on SIGTERM (took ${DURATION}s)"
 fi
 
+# ------------------------------------------------------------------------------
+# Test 11: Shell Subcommand TTY Requirement (REQ-0009)
+# ------------------------------------------------------------------------------
+log_test "Scenario 11: Explicit shell subcommand TTY enforcement"
+set +e
+OUT=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" shell 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"requires an interactive terminal"* ]]; then
+    pass "Executing 'shell' without pseudo-TTY exits with code 2 and descriptive TTY error"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Shell subcommand test timed out after 10s"
+else
+    fail "Shell subcommand without TTY expected exit 2, got ${EXIT_CODE}. Output: ${OUT}"
+fi
+
 echo "======================================================================"
 echo -e "Integration Test Suite Results: ${GREEN}${PASSED_TESTS} Passed${NC}, ${RED}${FAILED_TESTS} Failed${NC}"
 echo "======================================================================"
