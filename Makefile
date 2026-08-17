@@ -2,6 +2,8 @@
 
 IMAGE_NAME ?= cm-runner
 TAG ?= latest
+# TODO(#19): Validate or resolve container user UID/GID mapping in CI/CD pipeline vs workstation.
+# Pre-built registry images have static UIDs, whereas workstation mode requires dynamic host UIDs.
 USER_UID ?= $(shell id -u)
 USER_GID ?= $(shell id -g)
 
