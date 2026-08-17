@@ -4,19 +4,25 @@
 for running the CodeMender (`cm`) CLI against codebases with state persistence,
 sub-millisecond static Go dispatch, and Google Cloud ADC authentication.
 
-## Architecture & Structure
-
 - `pkg/cmrunner/`: Reusable Go execution engine specialized for CodeMender:
-  - `command.go`: `FindCommand` encapsulating target paths, flags, format
-    checks, and automatic `--format json` injection on stdout.
-  - `runner.go`: `Runner` with process group isolation (`Setpgid: true`), signal
-    forwarding (`SIGINT`/`SIGTERM` to `-cmd.Process.Pid`), and exit code
-    propagation (0 clean, 1 findings, >2 fatal).
+  - `runner.go`: Defines consumer-facing `Command` interface (`Cmd() []string`),
+    `Runner` with process group isolation (`Setpgid: true`), signal forwarding
+    (`SIGINT`/`SIGTERM` to `-cmd.Process.Pid`), `Runner.Run` for single
+    commands, and `Runner.RunSequence` for multi-step pipelines (routing
+    intermediate scan progress to `stderr`, findings to `stdout`, and evaluating
+    findings for exit code synthesis: 0 clean, 1 findings, 2 usage error, >2
+    fatal).
+  - `command.go`: `FindCommand` (encapsulating `cm find <target> [flags]`) and
+    `ReportCommand` (encapsulating `cm report --format=<fmt> [flags]`), each
+    with self-parsing `SetArgs` methods and `Cmd() []string`.
 - `cmd/cm-runner/`: Statically compiled Go entrypoint binary (`main.go`,
   `dispatch.go`):
-  - Subcommand parsing, whitespace trimming, sentinel error handling
-    (`errMissingSubcommand`, `errInvalidSubcommand`, `errPathNotFound`,
-    `errPathTraversal`), and standard `--` flag delimiter support.
+  - `dispatch.go`: `parseArgs(workspaceRoot, rawArgs)` receiving raw CLI args
+    directly, encapsulating `stripCMPrefix`, `shell` vs `find` routing, path
+    normalization, and composable nested command parsing (`reportCmd.SetArgs` ->
+    `findCmd.SetArgs`).
+  - `main.go`: Dispatches interactive `shell` (enforcing TTY) or forwards
+    `[]cmrunner.Command` directly to `runner.RunSequence`.
 - `docker/Dockerfile`: Multi-stage build (`golang:1.24-bookworm` builder ->
   `debian:bookworm-slim` runtime):
   - Pre-seeded configuration via `RUN cm init` under unprivileged `codemender`
