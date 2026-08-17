@@ -11,13 +11,14 @@ import (
 )
 
 var (
-	errMissingSubcommand = errors.New("missing subcommand: specify 'find'")
+	errMissingSubcommand = errors.New("missing subcommand: specify 'find' or 'shell'")
 	errInvalidSubcommand = errors.New("unrecognized subcommand")
 	errPathNotFound      = errors.New("scan target path does not exist in workspace")
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
 )
 
 // stripCMPrefix trims whitespace around tokens and drops any leading "cm" token.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0008
 func stripCMPrefix(rawArgs []string) []string {
 	clean := make([]string, 0, len(rawArgs))
 	for _, arg := range rawArgs {
@@ -33,7 +34,8 @@ func stripCMPrefix(rawArgs []string) []string {
 	return clean
 }
 
-// normalizePath verifies that targetPath exists within workspaceRoot.
+// normalizePath verifies that targetPath exists within workspaceRoot and prevents path traversal.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0004
 func normalizePath(workspaceRoot, targetPath string) (string, error) {
 	trimmed := strings.TrimSpace(targetPath)
 	if trimmed == "" || trimmed == "." || trimmed == "./" {
@@ -67,22 +69,44 @@ func normalizePath(workspaceRoot, targetPath string) (string, error) {
 	return relPath, nil
 }
 
-// parseArgs parses CLI arguments and constructs a *cmrunner.FindCommand object.
-// Usage: cm-runner find [path] [-- [flags...]]
-func parseArgs(workspaceRoot string, rawArgs []string) (*cmrunner.FindCommand, error) {
-	args := stripCMPrefix(rawArgs)
-	if len(args) == 0 {
-		return nil, errMissingSubcommand
+func isHelpRequested(flags []string) bool {
+	for _, f := range flags {
+		if f == "--help" || f == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseArgs parses raw CLI arguments into executable command sequences or shell parameters.
+// Handles prefix normalization, subcommand detection, flag splitting, and nested command parsing.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0006, REQ-0008, REQ-0009
+func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
+	cleanArgs := stripCMPrefix(rawArgs)
+	if len(cleanArgs) == 0 {
+		return nil, "", false, errMissingSubcommand
 	}
 
-	subcommand := args[0]
+	subcommand := cleanArgs[0]
+	if subcommand == "shell" {
+		target := "."
+		if len(cleanArgs) > 1 {
+			target = cleanArgs[1]
+		}
+		relPath, err := normalizePath(workspaceRoot, target)
+		if err != nil {
+			return nil, "", false, err
+		}
+		return nil, filepath.Join(workspaceRoot, relPath), true, nil
+	}
+
 	if subcommand != "find" {
-		return nil, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 
-	remaining := args[1:]
+	remaining := cleanArgs[1:]
 	target := "."
-	var flags []string
+	var cmFlags []string
 
 	// Look for standard '--' separator
 	dashIndex := -1
@@ -94,36 +118,47 @@ func parseArgs(workspaceRoot string, rawArgs []string) (*cmrunner.FindCommand, e
 	}
 
 	if dashIndex != -1 {
-		// Positional path is before '--', forwarded flags are after '--'
 		beforeDash := remaining[:dashIndex]
 		afterDash := remaining[dashIndex+1:]
 
 		for _, token := range beforeDash {
-			if strings.HasPrefix(token, "-") {
-				flags = append(flags, token)
-			} else {
+			if !strings.HasPrefix(token, "-") && target == "." {
 				target = token
+			} else {
+				cmFlags = append(cmFlags, token)
 			}
 		}
-		flags = append(flags, afterDash...)
+		cmFlags = append(cmFlags, afterDash...)
 	} else {
-		// Positional path followed by flags
-		for i := 0; i < len(remaining); i++ {
-			token := remaining[i]
-			if strings.HasPrefix(token, "-") {
-				flags = append(flags, token)
-			} else if target == "." {
+		for _, token := range remaining {
+			if !strings.HasPrefix(token, "-") && target == "." {
 				target = token
 			} else {
-				flags = append(flags, token)
+				cmFlags = append(cmFlags, token)
 			}
 		}
 	}
 
 	normalizedTarget, err := normalizePath(workspaceRoot, target)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
 
-	return cmrunner.NewFindCommand(normalizedTarget, flags...), nil
+	// Nested command parsing: ReportCommand extracts format flags, leftovers go to FindCommand
+	reportCmd := cmrunner.NewReportCommand()
+	scanFlags, err := reportCmd.SetArgs(cmFlags...)
+	if err != nil {
+		return nil, "", false, err
+	}
+
+	findCmd := cmrunner.NewFindCommand(normalizedTarget)
+	if _, err := findCmd.SetArgs(scanFlags...); err != nil {
+		return nil, "", false, err
+	}
+
+	if isHelpRequested(findCmd.Flags) {
+		return []cmrunner.Command{findCmd}, workspaceRoot, false, nil
+	}
+
+	return []cmrunner.Command{findCmd, reportCmd}, workspaceRoot, false, nil
 }
