@@ -65,18 +65,25 @@ func TestRun_FindNonExistentPath(t *testing.T) {
 	}
 }
 
-func TestRun_FindExecution(t *testing.T) {
+func TestRun_FindExecution_TwoPhase(t *testing.T) {
 	tmpDir := t.TempDir()
 	srcDir := filepath.Join(tmpDir, "src", "auth")
 	if err := os.MkdirAll(srcDir, 0755); err != nil {
 		t.Fatalf("failed to make test dir: %v", err)
 	}
 
-	// Create a mock cm script that echoes received arguments
+	// Create a mock cm script that handles find and report
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-echo "args: $@"
-exit 0
+if [ "$1" = "find" ]; then
+    echo "find progress on stderr" >&2
+    exit 0
+elif [ "$1" = "report" ]; then
+    echo '[{"FindingID":"vuln1","Title":"SQL Injection"}]'
+    echo "report log on stderr" >&2
+    exit 0
+fi
+exit 2
 `
 	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
 		t.Fatalf("failed to create mock script: %v", err)
@@ -84,13 +91,15 @@ exit 0
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"find", "src/auth"}, strings.NewReader(""), &stdout, &stderr, tmpDir, mockCM)
-	if code != cmrunner.ExitClean {
-		t.Fatalf("expected exit code 0, got %d (stderr: %q)", code, stderr.String())
+	if code != cmrunner.ExitFindings {
+		t.Fatalf("expected exit code 1 (ExitFindings), got %d (stderr: %q)", code, stderr.String())
 	}
 
 	out := stdout.String()
-	// Should have executed "find src/auth --format json"
-	if !strings.Contains(out, "find src/auth --format json") {
-		t.Errorf("expected output to contain forwarded args 'find src/auth --format json', got %q", out)
+	if !strings.Contains(out, "SQL Injection") {
+		t.Errorf("expected findings JSON on stdout, got %q", out)
+	}
+	if !strings.Contains(stderr.String(), "find progress on stderr") {
+		t.Errorf("expected find progress on stderr, got %q", stderr.String())
 	}
 }

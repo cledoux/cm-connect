@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -221,12 +222,13 @@ func TestParseArgs(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		args           []string
-		expectedTarget string
-		expectedFlags  []string
-		expectError    bool
-		expectedError  error
+		name              string
+		args              []string
+		expectedTarget    string
+		expectedFormat    string
+		expectedScanFlags []string
+		expectError       bool
+		expectedError     error
 	}{
 		{
 			name:          "empty args returns missing subcommand error",
@@ -262,42 +264,43 @@ func TestParseArgs(t *testing.T) {
 			name:           "find with no target path defaults to dot",
 			args:           []string{"find"},
 			expectedTarget: ".",
-			expectedFlags:  nil,
+			expectedFormat: "json",
 			expectError:    false,
 		},
 		{
 			name:           "cm find with no target path defaults to dot",
 			args:           []string{"cm", "find"},
 			expectedTarget: ".",
-			expectedFlags:  nil,
+			expectedFormat: "json",
 			expectError:    false,
 		},
 		{
 			name:           "find with scoped sub-path",
 			args:           []string{"find", "src/auth"},
 			expectedTarget: "src/auth",
-			expectedFlags:  nil,
+			expectedFormat: "json",
 			expectError:    false,
 		},
 		{
-			name:           "find with double-dash separating forwarded flags",
-			args:           []string{"find", "src/auth", "--", "--format=sarif", "--model", "vertex:gemini"},
-			expectedTarget: "src/auth",
-			expectedFlags:  []string{"--format=sarif", "--model", "vertex:gemini"},
-			expectError:    false,
+			name:              "find with double-dash separating forwarded flags",
+			args:              []string{"find", "src/auth", "--", "--format=sarif", "-y"},
+			expectedTarget:    "src/auth",
+			expectedFormat:    "sarif",
+			expectedScanFlags: []string{"-y"},
+			expectError:       false,
 		},
 		{
 			name:           "find with double-dash and no explicit path defaults to dot",
 			args:           []string{"find", "--", "--format=json"},
 			expectedTarget: ".",
-			expectedFlags:  []string{"--format=json"},
+			expectedFormat: "json",
 			expectError:    false,
 		},
 		{
 			name:           "find with flags without double dash",
 			args:           []string{"find", "--format=sarif", "src/auth"},
 			expectedTarget: "src/auth",
-			expectedFlags:  []string{"--format=sarif"},
+			expectedFormat: "sarif",
 			expectError:    false,
 		},
 		{
@@ -325,13 +328,11 @@ func TestParseArgs(t *testing.T) {
 				if cmd.TargetPath != tc.expectedTarget {
 					t.Errorf("expected target %q, got %q", tc.expectedTarget, cmd.TargetPath)
 				}
-				if len(cmd.Flags) != len(tc.expectedFlags) {
-					t.Fatalf("expected flags %v, got %v", tc.expectedFlags, cmd.Flags)
+				if cmd.ReportFormat != tc.expectedFormat {
+					t.Errorf("expected format %q, got %q", tc.expectedFormat, cmd.ReportFormat)
 				}
-				for i := range cmd.Flags {
-					if cmd.Flags[i] != tc.expectedFlags[i] {
-						t.Errorf("flag[%d]: expected %q, got %q", i, tc.expectedFlags[i], cmd.Flags[i])
-					}
+				if tc.expectedScanFlags != nil && !reflect.DeepEqual(cmd.ScanFlags, tc.expectedScanFlags) {
+					t.Errorf("expected scan flags %v, got %v", tc.expectedScanFlags, cmd.ScanFlags)
 				}
 			}
 		})

@@ -11,13 +11,14 @@ import (
 )
 
 var (
-	errMissingSubcommand = errors.New("missing subcommand: specify 'find'")
+	errMissingSubcommand = errors.New("missing subcommand: specify 'find' or 'shell'")
 	errInvalidSubcommand = errors.New("unrecognized subcommand")
 	errPathNotFound      = errors.New("scan target path does not exist in workspace")
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
 )
 
 // stripCMPrefix trims whitespace around tokens and drops any leading "cm" token.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0008
 func stripCMPrefix(rawArgs []string) []string {
 	clean := make([]string, 0, len(rawArgs))
 	for _, arg := range rawArgs {
@@ -33,7 +34,8 @@ func stripCMPrefix(rawArgs []string) []string {
 	return clean
 }
 
-// normalizePath verifies that targetPath exists within workspaceRoot.
+// normalizePath verifies that targetPath exists within workspaceRoot and prevents path traversal.
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0004
 func normalizePath(workspaceRoot, targetPath string) (string, error) {
 	trimmed := strings.TrimSpace(targetPath)
 	if trimmed == "" || trimmed == "." || trimmed == "./" {
@@ -69,6 +71,7 @@ func normalizePath(workspaceRoot, targetPath string) (string, error) {
 
 // parseArgs parses CLI arguments and constructs a *cmrunner.FindCommand object.
 // Usage: cm-runner find [path] [-- [flags...]]
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0006, REQ-0008
 func parseArgs(workspaceRoot string, rawArgs []string) (*cmrunner.FindCommand, error) {
 	args := stripCMPrefix(rawArgs)
 	if len(args) == 0 {
