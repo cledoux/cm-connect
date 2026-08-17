@@ -28,7 +28,9 @@ sub-millisecond static Go dispatch, and Google Cloud ADC authentication.
   - `make fmt`: Expands `goall` workflow (`goimports -w` and `gofmt -s -w`).
   - `make lint`: Enforces formatting and runs `go vet ./...`.
   - `make test`: Runs unit tests with race detector, statement coverage, and
-    `-timeout 60s`.
+    enforces `>= 90%` statement coverage threshold
+    (`scripts/check_coverage.sh`).
+  - `make coverage`: Generates HTML test coverage report (`coverage.html`).
   - `make build`: Enforces `lint` before building Docker image.
   - `make integration-test`: Runs 10-scenario container verification test suite
     under a 60s timeout envelope.

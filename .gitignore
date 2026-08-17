@@ -6,6 +6,9 @@ report.json
 # Temporary files and logs
 *.log
 *.tmp
+coverage.out
+coverage.html
+coverage.txt
 
 # Editor and OS metadata
 .DS_Store

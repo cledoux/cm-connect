@@ -1,0 +1,40 @@
+name: PR Guardrails
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  test-and-coverage:
+    name: Lint, Test & Coverage (>= 90%)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Check code formatting (gofmt)
+        run: |
+          UNFORMATTED=$(gofmt -s -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Error: The following Go files are not formatted properly:"
+            echo "$UNFORMATTED"
+            echo "Please run 'make fmt' locally."
+            exit 1
+          fi
+
+      - name: Run static analysis (go vet)
+        run: go vet ./...
+
+      - name: Run unit tests and enforce statement coverage >= 90%
+        run: ./scripts/check_coverage.sh 90.0

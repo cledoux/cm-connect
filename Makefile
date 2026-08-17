@@ -7,7 +7,7 @@ TAG ?= latest
 USER_UID ?= $(shell id -u)
 USER_GID ?= $(shell id -g)
 
-.PHONY: help fmt lint test build integration-test clean
+.PHONY: help fmt lint test coverage build integration-test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -19,8 +19,13 @@ fmt: ## Format Go source files using goimports and gofmt -s
 lint: fmt ## Format and run Go static analysis (go vet)
 	go vet ./...
 
-test: ## Run Go unit tests with race detection, coverage, and timeout
-	go test -v -race -cover -timeout 60s ./...
+test: ## Run Go unit tests with race detection and statement coverage check (>= 90%)
+	./scripts/check_coverage.sh 90.0
+
+coverage: ## Generate and view HTML test coverage report
+	go test -coverprofile=coverage.out -covermode=atomic ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "HTML coverage report generated at coverage.html"
 
 build: lint ## Build the CodeMender batch runner Docker image (always lints first)
 	docker build \
@@ -34,4 +39,4 @@ integration-test: ## Run full container verification test suite with timeout
 
 clean: ## Remove Docker image and clean local artifacts
 	docker rmi -f $(IMAGE_NAME):$(TAG) || true
-	rm -f bin/cm-runner.tmp
+	rm -f bin/cm-runner.tmp coverage.out coverage.html coverage.txt
