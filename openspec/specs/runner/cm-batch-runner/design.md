@@ -1,6 +1,11 @@
-______________________________________________________________________
-
-## archetype: capability status: accepted category: runner name: cm-batch-runner governing_spec: openspec/specs/runner/cm-batch-runner/spec.md governing_adr: adrs/ADR-0001.md
+---
+archetype: capability
+status: accepted
+category: runner
+name: cm-batch-runner
+governing_spec: openspec/specs/runner/cm-batch-runner/spec.md
+governing_adr: adrs/ADR-0001.md
+---
 
 # CodeMender Headless Batch Scanner Container Design (`find`)
 
@@ -17,13 +22,27 @@ establishing an extensible **Host $\\leftrightarrow$ Container Communication
 Protocol** that seamlessly scales to future lifecycle commands (`verify`, `fix`,
 `report`).
 
-The container distinguishes between the mounted repository root (`/workspace`)
-and the target scan path (full repo `.` by default, or scoped sub-tree like
-`./src/auth`), pre-initializes CodeMender configuration structures at build time
-(eliminating runtime `cm init`), mandates an explicit subcommand (`find`,
-`shell`), outputs structured JSON data strictly on `stdout`, routes all
-diagnostics to `stderr`, and runs under the unprivileged user `codemender` (UID
-1000\) via a compiled Go entrypoint binary (`cm-runner`).
+In CodeMender's underlying CLI architecture:
+
+- `cm find <path> [flags]` performs LLM-driven vulnerability discovery against
+  the codebase and records findings in a local SQLite state database
+  (`state.db`).
+- `cm report --format=<format>` queries the local SQLite state database and
+  formats the findings into machine-readable payloads (`json`, `sarif`) or
+  human-readable formats (`table`, `html`, `md`).
+
+The `cm-runner` entrypoint encapsulates this workflow into a unified batch
+protocol:
+
+1. Validates the subcommand and resolves the scan target path against
+   `/workspace`.
+1. Executes **Phase 1 (`cm find`)** with all tool steps and progress routed to
+   `stderr`.
+1. Executes **Phase 2 (`cm report --format json`)** to query the resulting
+   SQLite database and emit pure, structured findings on `stdout`.
+1. Evaluates the findings count to emit a deterministic exit code (`0` for clean
+   codebases, `1` when vulnerabilities are detected, `2` for usage errors, `> 2`
+   for fatal errors).
 
 Dynamic exploit verification (`verify`) and patch remediation (`fix`) are
 explicitly scoped out of this design:
@@ -38,6 +57,14 @@ explicitly scoped out of this design:
 
 - Establish an unambiguous, extensible Host $\\leftrightarrow$ Container
   Communication Protocol.
+- Implement a two-phase scan and report execution pipeline (`cm find`
+  $\\rightarrow$ SQLite $\\rightarrow$ `cm report`).
+- Default to structured, machine-readable JSON formatting
+  (`cm report --format=json`) on `stdout`.
+- Support format overrides (`sarif`, `table`, `html`, `md`) passed via
+  `--format` or `-f`.
+- Route all progress spinners, diagnostic logs, and session log paths strictly
+  to `stderr`.
 - Support both full repository scans (`.`) and scoped sub-path scans (e.g.
   `./src/auth`) while always retaining full repository context in `/workspace`.
 - Pre-initialize default configuration at container build time so runtime
@@ -45,12 +72,9 @@ explicitly scoped out of this design:
 - Require an explicit subcommand (`find`, `shell`), rejecting ambiguous empty
   invocations with exit code 2.
 - Provide interactive debugging support via `shell` with strict TTY validation.
-- Default to structured, machine-readable JSON formatting on `stdout`.
-- Direct all diagnostic banners, logs, and progress indicators strictly to
-  `stderr`.
 - Provide instant startup (\<1ms) and robust process group signal handling via a
   compiled Go entrypoint binary.
-- Support dual local and CI authentication modes (ADC directory mount or
+- Support multi-mode authentication (ADC directory mount or
   `CLOUDSDK_AUTH_ACCESS_TOKEN` / `GOOGLE_APPLICATION_CREDENTIALS`).
 - Enforce strict unprivileged userspace execution (user `codemender`, UID 1000).
 
@@ -76,9 +100,8 @@ flowchart TD
         WorkspaceMount["Channel 1: Repository Root Volume<br>-v $(pwd):/workspace (Full Context)"]
         AuthInjection["Channel 2: Auth Injection<br>-e CLOUDSDK_AUTH_ACCESS_TOKEN<br>or -v gcloud:ro"]
         CommandArgs["Channel 3: CLI Subcommand & Target Path<br>find [path] [flags], shell"]
-        InputArtifactSlot["Channel 4: Input Artifact Slot (Future)<br>-v finding.json:/input/finding.json<br>or stdin pipe"]
         
-        StdoutPipe["Channel A: stdout (Data Payload Stream)<br>Clean Structured JSON -> jq / CI Artifacts"]
+        StdoutPipe["Channel A: stdout (Data Payload Stream)<br>Clean Structured JSON/SARIF -> jq / CI Gating"]
         StderrPipe["Channel B: stderr (Diagnostics Stream)<br>Logs, Spinners, Traces -> CI Console"]
         ExitCodeSignal["Channel C: Exit Code (Verdict Signal)<br>0: Clean, 1: Findings, 2: CLI/Path/TTY Error"]
     end
@@ -88,12 +111,14 @@ flowchart TD
         GoRunner["Go Entrypoint Runner<br>(/usr/local/bin/cm-runner)"]
         
         subgraph SubcommandSwitch["Subcommand & Path Dispatcher"]
-            FindBranch["find Subcommand<br>resolves target path (. or subpath)<br>injects --format json"]
+            FindPipeline["find Subcommand<br>Phase 1: cm find &lt;path&gt; (scan)<br>Phase 2: cm report (format)"]
             ShellBranch["shell Subcommand<br>validates TTY (isatty)"]
             InvalidBranch["Missing / Unknown Subcommand / Bad Path<br>emit usage & exit 2"]
         end
         
-        CM["CodeMender CLI<br>(/usr/local/bin/cm)"]
+        CMFind["Phase 1: CodeMender Scanner<br>/usr/local/bin/cm find &lt;target&gt;"]
+        SQLiteDB["SQLite State DB<br>/home/codemender/.codemender/state.db"]
+        CMReport["Phase 2: CodeMender Reporter<br>/usr/local/bin/cm report --format=&lt;fmt&gt;"]
         BashShell["Interactive Shell<br>(/bin/bash)"]
         Preconfig["Pre-seeded Build-Time Config<br>(/home/codemender/.codemender)"]
     end
@@ -105,26 +130,34 @@ flowchart TD
     %% Ingestion Flow
     WorkspaceMount -.->|Mount full repo to /workspace| Container
     AuthInjection -.->|Inject credentials| Container
-    InputArtifactSlot -.->|Mount / pipe| Container
     CommandArgs -->|docker run args| GoRunner
 
     %% Dispatch Flow
     GoRunner -->|Parses & validates| SubcommandSwitch
-    SubcommandSwitch -->|find [path] [flags]| FindBranch
+    SubcommandSwitch -->|find [path] [flags]| FindPipeline
     SubcommandSwitch -->|shell| ShellBranch
     SubcommandSwitch -->|empty / invalid / bad path| InvalidBranch
 
-    FindBranch -->|Spawns /usr/local/bin/cm find <target_path> --format json| CM
-    Preconfig -.->|Provides default DB/config| CM
-    CM -->|Direct HTTPS (Port 443)| Vertex
+    %% Phase 1 Execution
+    FindPipeline -->|Step 1: Execute scan| CMFind
+    Preconfig -.->|Provides default DB/config| CMFind
+    CMFind -->|Direct HTTPS (Port 443)| Vertex
+    CMFind -->|Writes findings| SQLiteDB
+    CMFind -->|stderr: Scanning progress & logs| StderrPipe
 
+    %% Phase 2 Execution
+    FindPipeline -->|Step 2 (on scan success)| CMReport
+    SQLiteDB -->|Reads findings| CMReport
+    CMReport -->|stdout: Clean JSON / SARIF payload| StdoutPipe
+    CMReport -->|stderr: Session log notices| StderrPipe
+
+    %% Interactive & Error Branches
     ShellBranch -->|TTY valid| BashShell
     ShellBranch -->|TTY missing| StderrPipe
     InvalidBranch --> StderrPipe
 
-    %% Output Flow
-    CM -->|stdout: Clean JSON findings| StdoutPipe
-    CM -->|stderr: Diagnostic logs & progress| StderrPipe
+    %% Exit Code Verdict
+    FindPipeline -->|Evaluates finding count| ExitCodeSignal
     GoRunner -->|Propagates status| ExitCodeSignal
 ```
 
@@ -139,12 +172,11 @@ flowchart TD
      specific sub-module.
 1. **Scan Target Path Resolution:**
    - **Full Repository Scan (Default):** If the caller runs `find` without a
-     positional path (e.g. `docker run <image> find` or `find --model ...`),
-     `cm-runner` targets `.`.
+     positional path (e.g. `docker run <image> find`), `cm-runner` targets `.`.
    - **Scoped Sub-Path Scan:** If the caller specifies a sub-path (e.g.
-     `docker run <image> find src/auth` or `find ./pkg/api`), `cm-runner`
-     validates that the directory/file exists inside `/workspace` and targets
-     that path while keeping `/workspace` as the root context.
+     `docker run <image> find src/auth`), `cm-runner` validates that the
+     directory/file exists inside `/workspace` and targets that path while
+     keeping `/workspace` as the root context.
    - **Path Error:** If the sub-path does not exist in `/workspace`, `cm-runner`
      terminates immediately with exit code 2 and outputs an error to `stderr`.
 1. **Authentication Channel:**
@@ -159,21 +191,21 @@ flowchart TD
 1. **Command & Argument Channel:**
    - Explicit CLI tokens passed to `docker run <image> <subcommand> [flags]`.
    - Idempotent: `find` and `cm find` are treated identically.
-1. **Structured Ingestion Extension Slot (Future-Proofing for `verify`/`fix`):**
-   - Designed to ingest finding artifacts via volume mount
-     (`-v $(pwd)/findings.json:/input/findings.json:ro`) or standard input
-     stream (`stdin`).
+   - Flag Separation: Scanner flags (`-c`, `-y`, `--unrestricted`) are passed to
+     Phase 1 (`cm find`), while format flags (`-f`, `--format`) are passed to
+     Phase 2 (`cm report`).
 
 ### 2.2 Output Channels (Container $\\rightarrow$ Host)
 
 1. **Data Payload Stream (`stdout`):**
-   - Exclusively reserved for structured machine-readable JSON payloads.
+   - Exclusively reserved for structured machine-readable payloads emitted by
+     `cm report`.
    - Guaranteed zero log contamination (no banner headers, progress text, or
      ANSI escape codes).
    - Pipeable directly to `jq`, artifact uploaders, or downstream CI steps.
 1. **Diagnostics Stream (`stderr`):**
    - Captures all human-readable diagnostic messages, progress spinners, LLM
-     reasoning telemetry, and error traces.
+     reasoning telemetry, session log paths, and error traces from both phases.
    - Redirectable to CI step logs (`2> run.log`).
 1. **Verdict & Status Channel (Exit Codes):**
    - `0`: Scan completed cleanly with zero findings.
@@ -185,45 +217,146 @@ flowchart TD
 
 ______________________________________________________________________
 
-## 3. Decisions & Rationale
+## 3. Structured Output Schema
 
-### 3.1 Decision 1: Target Path Normalization & Full Repo Context
+### 3.1 Default JSON Schema (`cm report --format=json`)
+
+When invoked without format flags or with `--format=json`, `cm-runner` emits a
+JSON array of finding objects on `stdout`:
+
+```json
+[
+  {
+    "FindingID": "478a8868-b05a-5258-99ac-aa9e932374a7",
+    "SessionID": "ChAyYWI5YWYzYjg0MTc0YzgwEAgaATAqBG1haW4",
+    "Title": "XML External Entity (XXE) Injection via File Upload",
+    "FilePath": "/workspace/lib/xml.ts",
+    "Severity": "CRITICAL",
+    "Confidence": 100,
+    "Analysis": "An XML External Entity (XXE) Injection vulnerability exists in the XML file upload handling logic...",
+    "Snippet": "export async function parseXmlString (data: string, timeoutMs = 2000): Promise<string> {\n  const libxml2 = await loadLibxml2()...",
+    "VulnType": "XXE",
+    "VulnID": "CWE-611",
+    "Fingerprint": "",
+    "Status": "OPEN",
+    "SourceStage": "",
+    "FindingJSON": "",
+    "UpdatedAt": "",
+    "StartLine": 29,
+    "EndLine": 38,
+    "DismissReason": "",
+    "ConfidenceLevel": ""
+  }
+]
+```
+
+### 3.2 SARIF v2.1.0 Schema (`cm report --format=sarif`)
+
+When invoked with `-f sarif` or `--format=sarif`, `cm-runner` emits a standard
+OASIS SARIF v2.1.0 document on `stdout`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeMender",
+          "version": "dev"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "XXE",
+          "level": "error",
+          "message": {
+            "text": "XML External Entity (XXE) Injection via File Upload: ..."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/workspace/lib/xml.ts"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+______________________________________________________________________
+
+## 4. Decisions & Rationale
+
+### 4.1 Decision 1: Two-Phase Scan & Report Orchestration
+
+- **Choice:** `cm-runner find` executes `cm find <path>` (Phase 1) followed by
+  `cm report --format <fmt>` (Phase 2).
+- **Rationale:** CodeMender's `cm find` command is designed for scanning and
+  updating local state; it does not natively support direct structured JSON
+  output on stdout. In contrast, `cm report` specializes in querying the SQLite
+  state database and exporting cleanly formatted findings. By coordinating both
+  phases inside the Go runner, we provide callers with a single, seamless `find`
+  command that directly returns machine-readable results.
+- **Alternatives Considered:**
+  - *Attempting to parse `cm find` terminal output:* Highly brittle, susceptible
+    to ANSI escape sequences and UI changes.
+  - *Requiring callers to execute two container commands (`find` then
+    `report`):* Burdens CI/CD pipelines with maintaining persistent state
+    volumes between container runs.
+
+### 4.2 Decision 2: Format Negotiation & Strict Filter Exclusion
+
+- **Choice:** `cm-runner find` inspects CLI arguments, forwards scan-specific
+  flags (`-c`, `-y`, `--unrestricted`) to `cm find`, and configures the Phase 2
+  report generation using `--format <fmt>` (defaulting to `--format=json`).
+  Report filtering flags (e.g. `--severity`, `--status`, `--session`, `--sort`)
+  are intentionally NOT supported on `find`.
+- **Rationale:** Keeps the batch `find` execution contract clean and
+  predictable. The container always exports the complete, unfiltered findings
+  dataset in the requested structure, allowing downstream consumers, CI gates,
+  and PR bots to perform whatever filtering or triage they require without state
+  divergence.
+
+### 4.3 Decision 3: Finding-Aware Exit Code Evaluation
+
+- **Choice:** `cm-runner` inspects the report payload:
+  - If findings array is non-empty (`len > 0`): Exits with code `1`
+    (`ExitFindings`).
+  - If findings array is empty (`[]` or `null`): Exits with code `0`
+    (`ExitClean`).
+  - If a command fails: Propagates error exit code (`2` for usage, `>2` for
+    fatal).
+- **Rationale:** Provides standard CI/CD security gating semantics where exit
+  code `1` signals actionable policy violations / security findings, while exit
+  code `0` signals a clean bill of health.
+
+### 4.4 Decision 4: Target Path Normalization & Full Repo Context
 
 - **Choice:** `cm-runner` normalizes the scan target: defaults to `.` if no
   positional path is provided, forwards valid subpaths (e.g. `src/auth`), and
   checks path existence inside `/workspace` before invoking `cm`.
 - **Rationale:** Code analysis tools perform significantly better when they have
-  access to top-level dependency manifests and configuration files. By mounting
-  the full repo at `/workspace` and passing sub-paths as arguments to `cm find`,
-  we support targeted scanning without blinding CodeMender to root repo context.
-- **Alternatives Considered:**
-  - *Mounting only the sub-folder directly to `/workspace`:* Rejected because it
-    breaks root dependency resolution and configuration lookup for mono-repos
-    and multi-module packages.
+  access to top-level dependency manifests and configuration files. Mounting the
+  full repo at `/workspace` and passing sub-paths as arguments supports targeted
+  scanning without blinding CodeMender to root repo context.
 
-### 3.2 Decision 2: Mandatory Subcommand & No Default Action
-
-- **Choice:** `cm-runner` requires an explicit subcommand. Invoking
-  `docker run <image>` without arguments immediately exits with code 2 and
-  prints usage to `stderr`.
-- **Rationale:** Default actions in container entrypoints mask invocation errors
-  (e.g. typos or forgotten arguments) and create ambiguity in CI/CD pipeline
-  definitions.
-- **Alternatives Considered:**
-  - *Default to `find` on empty args:* Rejected because implicit execution makes
-    pipeline failures harder to debug and risks unexpected execution.
-
-### 3.3 Decision 3: Explicit `shell` Subcommand with TTY Enforcement
+### 4.5 Decision 5: Explicit `shell` Subcommand with TTY Enforcement
 
 - **Choice:** An explicit `shell` subcommand launches `/bin/bash`. If standard
   input is not a terminal (missing `-it`), `cm-runner` terminates immediately
-  with exit code 2 and prints:
-  `Error: 'shell' subcommand requires an interactive terminal. Please run with 'docker run -it <image> shell'`.
+  with exit code 2.
 - **Rationale:** Running a non-interactive shell hangs batch scripts
   indefinitely waiting for EOF or input. Detecting TTY presence upfront prevents
   pipeline stalls.
 
-### 3.4 Decision 4: Build-Time Configuration Pre-Initialization
+### 4.6 Decision 6: Build-Time Configuration Pre-Initialization
 
 - **Choice:** During Docker build, `cm init --dry-run || true` is executed under
   user `codemender` to generate default configuration and database structures in
@@ -231,25 +364,16 @@ ______________________________________________________________________
 - **Rationale:** Eliminates any prerequisite `cm init` step at runtime. Scans
   are completely stateless and work immediately upon container boot.
 
-### 3.5 Decision 5: Compiled Go Entrypoint Runner (`cm-runner`)
-
-- **Choice:** Implement `/usr/local/bin/cm-runner` in Go
-  (`cmd/cm-runner/main.go`) using a multi-stage Docker build.
-- **Rationale:** Sub-millisecond startup (~1ms), zero runtime interpreter memory
-  overhead, static compilation, robust signal trapping (`os/signal` forwarding
-  `SIGINT`/`SIGTERM` to child process groups via
-  `syscall.Kill(-cmd.Process.Pid, sig)` with `Setpgid: true`), and native TTY
-  detection (`golang.org/x/term` or `term.IsTerminal`).
-
 ______________________________________________________________________
 
-## 4. Multi-Stage Dockerfile Architecture
+## 5. Multi-Stage Dockerfile Architecture
 
 ```dockerfile
 # Stage 1: Build Go runner binary
 FROM golang:1.24-bookworm AS builder
 WORKDIR /app
 COPY cmd/cm-runner /app/cmd/cm-runner
+COPY pkg/cmrunner /app/pkg/cmrunner
 COPY go.mod go.sum* /app/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /app/bin/cm-runner ./cmd/cm-runner
 
@@ -301,38 +425,39 @@ ENTRYPOINT ["/usr/local/bin/cm-runner"]
 
 ______________________________________________________________________
 
-## 5. Risks & Mitigations
+## 6. Risks & Mitigations
 
-| Risk | Mitigation | | :--- | :--- | | **Pipeline stalls when `shell` is
-invoked in non-interactive CI** | `cm-runner` inspects terminal status and exits
-immediately with code 2 if `isatty(0)` is false. | | **Exit code 1 causes CI
-scripts with `set -e` to fail prematurely on findings** | Document clear pattern
-in CI templates to capture exit code (e.g. `set +e` or `status=$?`). | | **User
-specifies non-existent target path** | `cm-runner` validates path existence in
-`/workspace` upfront and emits clear error on `stderr` with code 2. | | **Output
-format flag collision when user specifies `-f sarif` or `--format text`** |
-`cm-runner` checks for existing `--format` and `-f` flags before injecting
-`--format json`. | | **Token expiration during long-running batch scans** |
-Document use of short-lived tokens generated immediately prior to step execution
-in CI. | | **Child toolchain orphaned processes on cancellation** | `cm-runner`
-uses process group signaling (`Setpgid: true` with `syscall.Kill(-pid, sig)`) to
-terminate child analyzer trees cleanly. |
+| Risk                                                                            | Mitigation                                                                                                                           |
+| :------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------- |
+| **Pipeline stalls when `shell` is invoked in non-interactive CI**               | `cm-runner` inspects terminal status and exits immediately with code 2 if `isatty(0)` is false.                                      |
+| **Exit code 1 causes CI scripts with `set -e` to fail prematurely on findings** | Document clear pattern in CI templates to capture exit code (e.g. `set +e` or `status=$?`).                                          |
+| **User specifies non-existent target path**                                     | `cm-runner` validates path existence in `/workspace` upfront and emits clear error on `stderr` with code 2.                          |
+| **Flag conflict between `cm find` and `cm report`**                             | `cm-runner` parses and splits flags, applying scan flags to Phase 1 and report flags to Phase 2.                                     |
+| **Session state pollution across runs in persistent mounts**                    | `cm-runner` can filter by active session ID or invoke `cm clean` if non-persistent behavior is requested.                            |
+| **Child toolchain orphaned processes on cancellation**                          | `cm-runner` uses process group signaling (`Setpgid: true` with `syscall.Kill(-pid, sig)`) to terminate child analyzer trees cleanly. |
 
 ______________________________________________________________________
 
-## 6. Verification Strategy
+## 7. Verification Strategy
 
-1. **Mandatory Subcommand Test:** Run `docker run <image>` without arguments;
-   assert immediate exit code 2 and usage instructions on `stderr`.
-1. **Full Repo Scan Test:** Run `docker run -v $(pwd):/workspace <image> find`;
-   verify `/usr/local/bin/cm find . --format json` is executed and clean JSON is
+1. **Two-Phase Scan Execution Test:** Run
+   `docker run --rm -v $(pwd):/workspace <image> find`; verify Phase 1 executes
+   `cm find` (progress to `stderr`) and Phase 2 executes
+   `cm report --format=json` (clean JSON to `stdout`).
+1. **Default Machine-Readable Output Test:** Pipe `stdout` directly to `jq .`;
+   assert valid JSON with zero syntax errors.
+1. **Format Override Test (SARIF):** Run
+   `docker run --rm <image> find -f sarif`; verify standard SARIF 2.1.0 output
    on `stdout`.
+1. **Clean Codebase Exit Code Test:** Scan clean codebase; verify exit code `0`
+   and empty findings array.
+1. **Vulnerability Detection Exit Code Test:** Scan vulnerable codebase; verify
+   exit code `1` and populated findings array.
 1. **Scoped Sub-Path Test:** Run
-   `docker run -v $(pwd):/workspace <image> find src/auth`; verify
-   `/usr/local/bin/cm find src/auth --format json` is executed.
-1. **Invalid Sub-Path Test:** Run
-   `docker run -v $(pwd):/workspace <image> find non/existent/path`; assert
-   immediate exit code 2 and path error on `stderr`.
+   `docker run -v $(pwd):/workspace <image> find src/auth`; verify targeted scan
+   with workspace root preserved.
+1. **Invalid Sub-Path Test:** Run `docker run <image> find non/existent/path`;
+   assert immediate exit code 2 and path error on `stderr`.
 1. **Missing TTY Test:** Run `docker run <image> shell` without `-it`; assert
    immediate exit code 2 and descriptive TTY error on `stderr`.
 1. **Interactive TTY Test:** Run `docker run -it <image> shell`; assert
@@ -342,9 +467,5 @@ ______________________________________________________________________
    succeeds.
 1. **Signal Handling Test:** Send `SIGINT`/`SIGTERM` to running container;
    verify clean shutdown within 500ms.
-1. **Exit Code Transparency Test:** Assert exit code `0` on clean fixtures, `1`
-   on vulnerability detection, and `> 2` on auth/fatal errors.
-1. **Multi-Mode Auth Test:** Verify Vertex AI execution with
-   `CLOUDSDK_AUTH_ACCESS_TOKEN` injected without mounting `~/.config/gcloud`.
 1. **Unprivileged User Test:** Execute `docker run <image> id -u && id -g` to
    verify strict UID/GID 1000 enforcement.
