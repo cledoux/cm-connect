@@ -2,109 +2,63 @@ package main
 
 import (
 	"errors"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"cm-connect/pkg/cmrunner"
 )
 
-// generateRandomStrings produces a slice of n random non-empty alphanumeric strings without leading 'cm'.
-func generateRandomStrings(r *rand.Rand, n int) []string {
-	chars := "abcdefghijklmnopqrstuvwxyz0123456789-_/."
-	res := make([]string, n)
-	for i := 0; i < n; i++ {
-		length := r.Intn(10) + 1
-		b := make([]byte, length)
-		for j := 0; j < length; j++ {
-			b[j] = chars[r.Intn(len(chars))]
-		}
-		str := string(b)
-		if str == "cm" {
-			str = "custom-token"
-		}
-		res[i] = str
-	}
-	return res
-}
-
-func TestStripCMPrefix_EdgeCases(t *testing.T) {
+func TestPartitionDash(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    []string
-		expected []string
+		name               string
+		args               []string
+		expectedBeforeDash []string
+		expectedAfterDash  []string
 	}{
 		{
-			name:     "empty input",
-			input:    []string{},
-			expected: []string{},
+			name:               "empty args",
+			args:               []string{},
+			expectedBeforeDash: []string{},
+			expectedAfterDash:  nil,
 		},
 		{
-			name:     "only whitespace strings",
-			input:    []string{"   ", "\t"},
-			expected: []string{},
+			name:               "no double dash",
+			args:               []string{"src/auth"},
+			expectedBeforeDash: []string{"src/auth"},
+			expectedAfterDash:  nil,
 		},
 		{
-			name:     "only cm token",
-			input:    []string{"cm"},
-			expected: []string{},
+			name:               "double dash with target path and scan flags",
+			args:               []string{"src/auth", "--", "-c", "5", "--unrestricted"},
+			expectedBeforeDash: []string{"src/auth"},
+			expectedAfterDash:  []string{"-c", "5", "--unrestricted"},
 		},
 		{
-			name:     "cm with whitespace",
-			input:    []string{"  cm  ", "find"},
-			expected: []string{"find"},
+			name:               "double dash at start",
+			args:               []string{"--", "-c", "5"},
+			expectedBeforeDash: []string{},
+			expectedAfterDash:  []string{"-c", "5"},
 		},
 		{
-			name:     "cm find without path",
-			input:    []string{"cm", "find"},
-			expected: []string{"find"},
-		},
-		{
-			name:     "find without cm prefix",
-			input:    []string{"find", "src/auth"},
-			expected: []string{"find", "src/auth"},
+			name:               "trailing double dash without following flags",
+			args:               []string{"src/auth", "--"},
+			expectedBeforeDash: []string{"src/auth"},
+			expectedAfterDash:  []string{},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := stripCMPrefix(tc.input)
-			if len(result) != len(tc.expected) {
-				t.Fatalf("for input %v: expected len %d, got %d: %v", tc.input, len(tc.expected), len(result), result)
+			before, after := partitionDash(tc.args)
+			if !reflect.DeepEqual(before, tc.expectedBeforeDash) {
+				t.Errorf("expected beforeDash %v, got %v", tc.expectedBeforeDash, before)
 			}
-			for i := range result {
-				if result[i] != tc.expected[i] {
-					t.Errorf("for input %v at index %d: expected %q, got %q", tc.input, i, tc.expected[i], result[i])
-				}
+			if !reflect.DeepEqual(after, tc.expectedAfterDash) {
+				t.Errorf("expected afterDash %v, got %v", tc.expectedAfterDash, after)
 			}
 		})
-	}
-}
-
-func TestStripCMPrefix_Randomized(t *testing.T) {
-	seed := time.Now().UnixNano()
-	r := rand.New(rand.NewSource(seed))
-
-	for i := 0; i < 100; i++ {
-		numTokens := r.Intn(20) + 1
-		randomTokens := generateRandomStrings(r, numTokens)
-		input := append([]string{"cm"}, randomTokens...)
-		result := stripCMPrefix(input)
-
-		if len(result) != len(randomTokens) {
-			t.Fatalf("FAILED with seed %d\nInput was: %v\nExpected len %d, got len %d: %v",
-				seed, input, len(randomTokens), len(result), result)
-		}
-
-		for j := range result {
-			if result[j] != randomTokens[j] {
-				t.Fatalf("FAILED with seed %d\nInput was: %v\nAt index %d: expected %q, got %q",
-					seed, input, j, randomTokens[j], result[j])
-			}
-		}
 	}
 }
 
@@ -237,26 +191,26 @@ func TestParseArgs(t *testing.T) {
 			expectedError: errMissingSubcommand,
 		},
 		{
-			name:          "only cm token returns missing subcommand error",
+			name:          "only cm token returns invalid subcommand error",
 			args:          []string{"cm"},
-			expectError:   true,
-			expectedError: errMissingSubcommand,
-		},
-		{
-			name:          "whitespace token returns missing subcommand error",
-			args:          []string{"   "},
-			expectError:   true,
-			expectedError: errMissingSubcommand,
-		},
-		{
-			name:          "unknown subcommand returns invalid subcommand error",
-			args:          []string{"invalid-cmd"},
 			expectError:   true,
 			expectedError: errInvalidSubcommand,
 		},
 		{
-			name:          "unknown subcommand with cm prefix and whitespace",
-			args:          []string{" cm ", "invalid-cmd"},
+			name:          "cm prefix with find returns invalid subcommand error",
+			args:          []string{"cm", "find"},
+			expectError:   true,
+			expectedError: errInvalidSubcommand,
+		},
+		{
+			name:          "cm prefix with shell returns invalid subcommand error",
+			args:          []string{"cm", "shell", "src/auth"},
+			expectError:   true,
+			expectedError: errInvalidSubcommand,
+		},
+		{
+			name:          "unknown subcommand returns invalid subcommand error",
+			args:          []string{"invalid-cmd"},
 			expectError:   true,
 			expectedError: errInvalidSubcommand,
 		},
@@ -269,22 +223,20 @@ func TestParseArgs(t *testing.T) {
 		},
 		{
 			name:              "shell subcommand with scoped path",
-			args:              []string{"cm", "shell", "src/auth"},
+			args:              []string{"shell", "src/auth"},
 			expectedIsShell:   true,
 			expectedTargetDir: filepath.Join(tmpDir, "src/auth"),
 			expectError:       false,
 		},
 		{
-			name:             "find with no target path defaults to dot and json",
-			args:             []string{"find"},
-			expectedCmdCount: 2,
-			expectedTarget:   ".",
-			expectedFormat:   "json",
-			expectError:      false,
+			name:          "shell subcommand with non-existent path returns path not found error",
+			args:          []string{"shell", "non/existent/path"},
+			expectError:   true,
+			expectedError: errPathNotFound,
 		},
 		{
-			name:             "cm find with no target path defaults to dot",
-			args:             []string{"cm", "find"},
+			name:             "find with no target path defaults to dot and json",
+			args:             []string{"find"},
 			expectedCmdCount: 2,
 			expectedTarget:   ".",
 			expectedFormat:   "json",
@@ -300,41 +252,49 @@ func TestParseArgs(t *testing.T) {
 		},
 		{
 			name:              "find with double-dash separating forwarded flags",
-			args:              []string{"find", "src/auth", "--", "--format=sarif", "-y"},
+			args:              []string{"find", "src/auth", "--", "-c", "5", "--unrestricted"},
 			expectedCmdCount:  2,
 			expectedTarget:    "src/auth",
-			expectedFormat:    "sarif",
-			expectedScanFlags: []string{"-y"},
+			expectedFormat:    "json",
+			expectedScanFlags: []string{"-c", "5", "--unrestricted"},
 			expectError:       false,
 		},
 		{
-			name:             "find with double-dash and no explicit path defaults to dot",
-			args:             []string{"find", "--", "--format=json"},
+			name:              "find with double-dash and no explicit path defaults to dot",
+			args:              []string{"find", "--", "-c", "5"},
+			expectedCmdCount:  2,
+			expectedTarget:    ".",
+			expectedFormat:    "json",
+			expectedScanFlags: []string{"-c", "5"},
+			expectError:       false,
+		},
+		{
+			name:             "find with trailing double-dash",
+			args:             []string{"find", "src/auth", "--"},
 			expectedCmdCount: 2,
-			expectedTarget:   ".",
+			expectedTarget:   "src/auth",
 			expectedFormat:   "json",
 			expectError:      false,
 		},
 		{
-			name:             "find with flags without double dash",
-			args:             []string{"find", "--format=sarif", "src/auth"},
-			expectedCmdCount: 2,
-			expectedTarget:   "src/auth",
-			expectedFormat:   "sarif",
-			expectError:      false,
-		},
-		{
-			name:             "find with help flag returns only find command",
-			args:             []string{"find", "--help"},
-			expectedCmdCount: 1,
-			expectedTarget:   ".",
-			expectError:      false,
+			name:              "find with help flag returns only find command",
+			args:              []string{"find", "--", "--help"},
+			expectedCmdCount:  1,
+			expectedTarget:    ".",
+			expectedScanFlags: []string{"--help"},
+			expectError:       false,
 		},
 		{
 			name:          "find with non-existent sub-path returns path not found error",
 			args:          []string{"find", "non/existent/path"},
 			expectError:   true,
 			expectedError: errPathNotFound,
+		},
+		{
+			name:          "find with path traversal returns path traversal error",
+			args:          []string{"find", "../../etc/passwd"},
+			expectError:   true,
+			expectedError: errPathTraversal,
 		},
 	}
 
