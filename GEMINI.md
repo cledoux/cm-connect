@@ -13,14 +13,13 @@ sub-millisecond static Go dispatch, and Google Cloud ADC authentication.
     findings for exit code synthesis: 0 clean, 1 findings, 2 usage error, >2
     fatal).
   - `command.go`: `FindCommand` (encapsulating `cm find <target> [flags]`) and
-    `ReportCommand` (encapsulating `cm report --format=<fmt> [flags]`), each
-    with self-parsing `SetArgs` methods and `Cmd() []string`.
+    `ReportCommand` (encapsulating `cm report --format=json [flags]`).
 - `cmd/cm-runner/`: Statically compiled Go entrypoint binary (`main.go`,
   `dispatch.go`):
-  - `dispatch.go`: `parseArgs(workspaceRoot, rawArgs)` receiving raw CLI args
-    directly, encapsulating `stripCMPrefix`, `shell` vs `find` routing, path
-    normalization, and composable nested command parsing (`reportCmd.SetArgs` ->
-    `findCmd.SetArgs`).
+  - `dispatch.go`: `parseArgs(workspaceRoot, rawArgs)` enforcing exact
+    `os.Args[1]` subcommand dispatch (`find`, `shell`), POSIX `--` delimiter
+    partitioning (separating positional target path from unowned scan flags),
+    and dedicated handlers (`parseShellArgs`, `parseFindArgs`).
   - `main.go`: Dispatches interactive `shell` (enforcing TTY) or forwards
     `[]cmrunner.Command` directly to `runner.RunSequence`.
 - `docker/Dockerfile`: Multi-stage build (`golang:1.24-bookworm` builder ->
