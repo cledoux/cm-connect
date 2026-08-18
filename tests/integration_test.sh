@@ -158,20 +158,25 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Test 7: Build-Time Configuration Pre-Initialization (REQ-0002)
+# Test 7: Build-Time Configuration Pre-Initialization & Headless Defaults (REQ-0002)
 # ------------------------------------------------------------------------------
-log_test "Scenario 7: Build-time pre-initialized configuration structures"
+log_test "Scenario 7: Build-time pre-initialized configuration structures & headless defaults"
 set +e
 OUT=$(run_with_timeout 10 docker run --rm --entrypoint ls "${IMAGE_NAME}" -la /home/codemender/.codemender 2>&1)
 EXIT_CODE=$?
+CONFIG_OUT=$(run_with_timeout 10 docker run --rm --entrypoint cat "${IMAGE_NAME}" /home/codemender/.codemender/config.yaml 2>&1)
 set -e
 
-if [ ${EXIT_CODE} -eq 0 ] && [[ "${OUT}" == *"logs"* ]]; then
-    pass "Pre-initialized configuration structures exist under /home/codemender/.codemender"
+if [ ${EXIT_CODE} -eq 0 ] && [[ "${OUT}" == *"config.yaml"* ]] && \
+   [[ "${CONFIG_OUT}" == *".rs"* ]] && \
+   [[ "${CONFIG_OUT}" == *"format: \"json\""* || "${CONFIG_OUT}" == *"format: json"* ]] && \
+   [[ "${CONFIG_OUT}" == *"confirm_commands: false"* ]] && \
+   [[ "${CONFIG_OUT}" == *"confirm_writes: false"* ]]; then
+    pass "Pre-initialized configuration structures and headless defaults (.rs, json, confirm=false) exist in config.yaml"
 elif [ ${EXIT_CODE} -eq 124 ]; then
     fail "Test timed out after 10s"
 else
-    fail "Configuration structures missing in /home/codemender/.codemender. Output: ${OUT}"
+    fail "Configuration structures or headless defaults invalid in /home/codemender/.codemender/config.yaml. Output:\n${CONFIG_OUT}"
 fi
 
 # ------------------------------------------------------------------------------
@@ -254,6 +259,46 @@ elif [ ${EXIT_CODE} -eq 124 ] || [ ${WRAPPER_EXIT_CODE} -eq 124 ]; then
     fail "Shell subcommand test timed out after 10s"
 else
     fail "Shell subcommand without TTY expected exit 2, got container=${EXIT_CODE} wrapper=${WRAPPER_EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 12: Init Subcommand Execution & Mutation (REQ-0002)
+# ------------------------------------------------------------------------------
+log_test "Scenario 12: Container execution of 'init' subcommand"
+set +e
+OUT_HELP=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" init --help 2>&1)
+EXIT_HELP=$?
+
+# Test in-place mutation of a mounted config file
+SAMPLE_INIT_CONFIG="${TEST_WORKSPACE}/init-test-config.yaml"
+cat << 'EOF' > "${SAMPLE_INIT_CONFIG}"
+scan:
+  extensions:
+    include:
+      - ".go"
+      - ".py"
+output:
+  format: "table"
+tools:
+  confirm_commands: true
+  confirm_writes: true
+EOF
+
+OUT_MUTATE=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" init /workspace/init-test-config.yaml 2>&1)
+EXIT_MUTATE=$?
+MUTATED_FILE_CONTENT=$(cat "${SAMPLE_INIT_CONFIG}")
+set -e
+
+if [ ${EXIT_HELP} -eq 0 ] && [[ "${OUT_HELP}" == *"cm-runner init"* ]] && \
+   [ ${EXIT_MUTATE} -eq 0 ] && \
+   [[ "${MUTATED_FILE_CONTENT}" == *".rs"* ]] && \
+   [[ "${MUTATED_FILE_CONTENT}" == *"confirm_commands: false"* ]] && \
+   [[ "${MUTATED_FILE_CONTENT}" == *"confirm_writes: false"* ]]; then
+    pass "Executing 'init' in container supports --help and correctly mutates target config in-place"
+elif [ ${EXIT_HELP} -eq 124 ] || [ ${EXIT_MUTATE} -eq 124 ]; then
+    fail "Init subcommand test timed out after 10s"
+else
+    fail "Init subcommand failed. Help exit=${EXIT_HELP}, Mutate exit=${EXIT_MUTATE}. Output: ${OUT_MUTATE}"
 fi
 
 echo "======================================================================"
