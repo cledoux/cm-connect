@@ -229,6 +229,12 @@ func TestParseArgs(t *testing.T) {
 			expectError:       false,
 		},
 		{
+			name:          "shell subcommand with non-existent path returns path not found error",
+			args:          []string{"shell", "non/existent/path"},
+			expectError:   true,
+			expectedError: errPathNotFound,
+		},
+		{
 			name:             "find with no target path defaults to dot and json",
 			args:             []string{"find"},
 			expectedCmdCount: 2,

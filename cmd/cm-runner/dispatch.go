@@ -72,37 +72,22 @@ func isHelpRequested(flags []string) bool {
 	return false
 }
 
-// parseArgs parses raw CLI arguments into executable command sequences or shell parameters.
-// Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
-func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
-	if len(rawArgs) == 0 {
-		return nil, "", false, errMissingSubcommand
+// parseShellArgs processes CLI arguments for the interactive 'shell' subcommand.
+func parseShellArgs(workspaceRoot string, args []string) (targetDir string, isShell bool, err error) {
+	target := "."
+	if len(args) > 0 {
+		target = args[0]
 	}
-
-	subcommand := rawArgs[0]
-	if subcommand == "cm" {
-		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+	relPath, err := normalizePath(workspaceRoot, target)
+	if err != nil {
+		return "", false, err
 	}
+	return filepath.Join(workspaceRoot, relPath), true, nil
+}
 
-	if subcommand == "shell" {
-		target := "."
-		if len(rawArgs) > 1 {
-			target = rawArgs[1]
-		}
-		relPath, err := normalizePath(workspaceRoot, target)
-		if err != nil {
-			return nil, "", false, err
-		}
-		return nil, filepath.Join(workspaceRoot, relPath), true, nil
-	}
-
-	if subcommand != "find" {
-		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
-	}
-
-	remaining := rawArgs[1:]
-	beforeDash, afterDash := partitionDash(remaining)
+// parseFindArgs processes CLI arguments for the two-phase 'find' scan and report pipeline.
+func parseFindArgs(workspaceRoot string, args []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
+	beforeDash, afterDash := partitionDash(args)
 
 	target := "."
 	if len(beforeDash) > 0 {
@@ -123,4 +108,24 @@ func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command,
 
 	reportCmd := cmrunner.NewReportCommand("json")
 	return []cmrunner.Command{findCmd, reportCmd}, workspaceRoot, false, nil
+}
+
+// parseArgs parses raw CLI arguments into executable command sequences or shell parameters.
+// Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
+func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
+	if len(rawArgs) == 0 {
+		return nil, "", false, errMissingSubcommand
+	}
+
+	subcommand := rawArgs[0]
+	switch subcommand {
+	case "shell":
+		targetDir, isShell, err := parseShellArgs(workspaceRoot, rawArgs[1:])
+		return nil, targetDir, isShell, err
+	case "find":
+		return parseFindArgs(workspaceRoot, rawArgs[1:])
+	default:
+		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+	}
 }
