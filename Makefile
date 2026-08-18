@@ -7,7 +7,7 @@ TAG ?= latest
 USER_UID ?= $(shell id -u)
 USER_GID ?= $(shell id -g)
 
-.PHONY: help fmt lint test coverage build integration-test clean
+.PHONY: help fmt lint test coverage build rebuild integration-test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -29,6 +29,14 @@ coverage: ## Generate and view HTML test coverage report
 
 build: lint ## Build the CodeMender batch runner Docker image (always lints first)
 	docker build \
+		--build-arg USER_UID=$(USER_UID) \
+		--build-arg USER_GID=$(USER_GID) \
+		-t $(IMAGE_NAME):$(TAG) \
+		-f docker/Dockerfile .
+
+rebuild: clean lint ## Clean and rebuild the CodeMender batch runner Docker image from scratch without cache
+	docker build \
+		--no-cache \
 		--build-arg USER_UID=$(USER_UID) \
 		--build-arg USER_GID=$(USER_GID) \
 		-t $(IMAGE_NAME):$(TAG) \
