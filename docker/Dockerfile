@@ -50,7 +50,8 @@ RUN if ! getent group "${USER_GID}" >/dev/null 2>&1; then groupadd -g "${USER_GI
 USER codemender
 WORKDIR /workspace
 
-# Pre-initialize CodeMender configuration structures at build-time
-RUN cm init
+# Pre-initialize CodeMender configuration structures at build-time and apply headless defaults
+RUN cm init \
+    && /usr/local/bin/cm-runner init
 
 ENTRYPOINT ["/usr/local/bin/cm-runner"]
