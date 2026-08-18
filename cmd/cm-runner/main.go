@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"cm-connect/pkg/cmconfig"
 	"cm-connect/pkg/cmrunner"
 )
 
@@ -30,22 +31,24 @@ var isTerminalFn = isTerminal
 var execShellFn = syscall.Exec
 
 // printUsage emits the standard usage reference guide to the given writer.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0003
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0002, REQ-0003
 func printUsage(w io.Writer) {
 	usage := `CodeMender Runner (cm-runner) - Headless Container Entrypoint
 
 Usage:
   cm-runner find [path] [-- [flags]]     Run CodeMender vulnerability scan on full repo or sub-path
   cm-runner shell [path]                 Launch interactive /bin/bash shell in /workspace (requires -it)
+  cm-runner init [path]                  Pre-seed and apply headless configuration defaults in-place
 
 Arguments:
-  [path]               Scans repository at /workspace (default: '.') or scoped sub-path.
+  [path]               For find/shell: Scans repository at /workspace (default: '.') or scoped sub-path.
+                       For init: Target config.yaml file path (default: $HOME/.codemender/config.yaml).
   [-- [flags...]]      Optional flags forwarded directly to CodeMender CLI.
                        Defaults to '--format json' on stdout unless overridden (-f, --format, --help).
                        Diagnostics and progress logs are routed to stderr.
 
 Exit Codes:
-  0    Scan completed successfully with 0 findings
+  0    Scan completed successfully with 0 findings, or init/help completed
   1    Scan completed with findings detected
   2    CLI usage error, missing subcommand, invalid target path, or missing TTY on shell
   >2   Fatal tooling, execution, or authentication error
@@ -54,13 +57,25 @@ Exit Codes:
 }
 
 // run parses arguments and orchestrates execution of the target subcommand.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0003, REQ-0005, REQ-0009
+// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
-	cmds, targetDir, isShell, err := parseArgs(workspaceDir, args)
+	cmds, targetDir, isShell, isInit, configPath, isHelp, err := parseArgs(workspaceDir, args)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		printUsage(stderr)
 		return cmrunner.ExitUsage
+	}
+
+	if isInit {
+		if isHelp {
+			printUsage(stdout)
+			return cmrunner.ExitClean
+		}
+		if err := cmconfig.MutateConfigFile(configPath); err != nil {
+			fmt.Fprintf(stderr, "Error: failed to initialize configuration: %v\n", err)
+			return cmrunner.ExitError
+		}
+		return cmrunner.ExitClean
 	}
 
 	if isShell {

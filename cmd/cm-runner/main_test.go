@@ -12,6 +12,19 @@ import (
 	"cm-connect/pkg/cmrunner"
 )
 
+const sampleValidConfigForMainTest = `# CodeMender Default Configuration
+scan:
+  extensions:
+    include:
+      - ".go"
+      - ".py"
+output:
+  format: "table"
+tools:
+  confirm_commands: true
+  confirm_writes: true
+`
+
 func TestIsTerminal(t *testing.T) {
 	// 1. Non-file reader
 	if isTerminal(strings.NewReader("hello")) {
@@ -40,6 +53,9 @@ func TestPrintUsage(t *testing.T) {
 	}
 	if !strings.Contains(out, "cm-runner shell") {
 		t.Errorf("expected usage to contain 'cm-runner shell', got %q", out)
+	}
+	if !strings.Contains(out, "cm-runner init") {
+		t.Errorf("expected usage to contain 'cm-runner init', got %q", out)
 	}
 	if !strings.Contains(out, "Exit Codes:") {
 		t.Errorf("expected usage to contain 'Exit Codes:', got %q", out)
@@ -216,5 +232,124 @@ exit 2
 	}
 	if !strings.Contains(stderr.String(), "find progress on stderr") {
 		t.Errorf("expected find progress on stderr, got %q", stderr.String())
+	}
+}
+
+func TestRun_Init_DefaultPath_Success(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	if err := os.MkdirAll(cmDir, 0755); err != nil {
+		t.Fatalf("failed to make .codemender dir: %v", err)
+	}
+	configPath := filepath.Join(cmDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600); err != nil {
+		t.Fatalf("failed to write config.yaml: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init"}, strings.NewReader(""), &stdout, &stderr, tmpHome, "/bin/true")
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0), got %d (stderr: %s)", code, stderr.String())
+	}
+
+	mutatedContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read mutated config: %v", err)
+	}
+	if !strings.Contains(string(mutatedContent), ".rs") {
+		t.Errorf("expected .rs in mutated config, got:\n%s", string(mutatedContent))
+	}
+	if !strings.Contains(string(mutatedContent), `format: "json"`) && !strings.Contains(string(mutatedContent), `format: json`) {
+		t.Errorf("expected format: json in mutated config, got:\n%s", string(mutatedContent))
+	}
+}
+
+func TestRun_Init_ExplicitPath_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "custom-config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init", configPath}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0), got %d (stderr: %s)", code, stderr.String())
+	}
+
+	mutatedContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read mutated config: %v", err)
+	}
+	if !strings.Contains(string(mutatedContent), ".rs") {
+		t.Errorf("expected .rs in mutated config, got:\n%s", string(mutatedContent))
+	}
+}
+
+func TestRun_Init_Help(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	code := run([]string{"init", "--help"}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0) for init --help, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "cm-runner init") {
+		t.Errorf("expected init usage on stdout, got:\n%s", stdout.String())
+	}
+}
+
+func TestRun_Init_MissingConfigFile(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	code := run([]string{"init", "/non/existent/config.yaml"}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	if code != cmrunner.ExitError {
+		t.Fatalf("expected ExitError (>2), got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "failed to initialize configuration") {
+		t.Errorf("expected error on stderr, got:\n%s", stderr.String())
+	}
+}
+
+func TestRun_Init_MissingCriticalKey_FailsFast(t *testing.T) {
+	tmpDir := t.TempDir()
+	badConfig := `
+scan:
+  extensions:
+    include:
+      - ".go"
+output:
+  format: "table"
+`
+	configPath := filepath.Join(tmpDir, "bad-config.yaml")
+	if err := os.WriteFile(configPath, []byte(badConfig), 0600); err != nil {
+		t.Fatalf("failed to write bad config: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init", configPath}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	if code != cmrunner.ExitError {
+		t.Fatalf("expected ExitError (>2), got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "tools.confirm_commands") {
+		t.Errorf("expected missing critical key in stderr, got:\n%s", stderr.String())
+	}
+}
+
+func TestRun_Init_CMInitPrefix_Rejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	tmpDir := t.TempDir()
+
+	code := run([]string{"cm", "init"}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	if code != cmrunner.ExitUsage {
+		t.Fatalf("expected ExitUsage (2) for cm init prefix, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "unrecognized subcommand 'cm'") {
+		t.Errorf("expected unrecognized subcommand error on stderr, got:\n%s", stderr.String())
 	}
 }

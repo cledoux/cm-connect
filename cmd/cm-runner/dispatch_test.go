@@ -165,6 +165,68 @@ func TestNormalizePath(t *testing.T) {
 	}
 }
 
+func TestParseInitArgs(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	os.Setenv("HOME", "/custom/home")
+
+	t.Run("default path when no args provided", func(t *testing.T) {
+		path, isHelp, err := parseInitArgs([]string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if isHelp {
+			t.Errorf("expected isHelp false, got true")
+		}
+		expected := filepath.Join("/custom/home", ".codemender", "config.yaml")
+		if path != expected {
+			t.Errorf("expected path %q, got %q", expected, path)
+		}
+	})
+
+	t.Run("explicit path provided", func(t *testing.T) {
+		path, isHelp, err := parseInitArgs([]string{"/etc/codemender/config.yaml"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if isHelp {
+			t.Errorf("expected isHelp false, got true")
+		}
+		if path != "/etc/codemender/config.yaml" {
+			t.Errorf("expected path '/etc/codemender/config.yaml', got %q", path)
+		}
+	})
+
+	t.Run("help flag --help", func(t *testing.T) {
+		_, isHelp, err := parseInitArgs([]string{"--help"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !isHelp {
+			t.Errorf("expected isHelp true, got false")
+		}
+	})
+
+	t.Run("help flag -h", func(t *testing.T) {
+		_, isHelp, err := parseInitArgs([]string{"-h"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !isHelp {
+			t.Errorf("expected isHelp true, got false")
+		}
+	})
+
+	t.Run("error when HOME is unset", func(t *testing.T) {
+		os.Unsetenv("HOME")
+		_, _, err := parseInitArgs([]string{})
+		if err == nil {
+			t.Errorf("expected error when HOME is unset, got nil")
+		}
+	})
+}
+
 func TestParseArgs(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "src", "auth")
@@ -172,17 +234,24 @@ func TestParseArgs(t *testing.T) {
 		t.Fatalf("failed to create temp dirs: %v", err)
 	}
 
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", "/test/home")
+
 	tests := []struct {
-		name              string
-		args              []string
-		expectedCmdCount  int
-		expectedTarget    string
-		expectedFormat    string
-		expectedScanFlags []string
-		expectedIsShell   bool
-		expectedTargetDir string
-		expectError       bool
-		expectedError     error
+		name               string
+		args               []string
+		expectedCmdCount   int
+		expectedTarget     string
+		expectedFormat     string
+		expectedScanFlags  []string
+		expectedIsShell    bool
+		expectedTargetDir  string
+		expectedIsInit     bool
+		expectedConfigPath string
+		expectedIsHelp     bool
+		expectError        bool
+		expectedError      error
 	}{
 		{
 			name:          "empty args returns missing subcommand error",
@@ -205,6 +274,12 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:          "cm prefix with shell returns invalid subcommand error",
 			args:          []string{"cm", "shell", "src/auth"},
+			expectError:   true,
+			expectedError: errInvalidSubcommand,
+		},
+		{
+			name:          "cm prefix with init returns invalid subcommand error",
+			args:          []string{"cm", "init"},
 			expectError:   true,
 			expectedError: errInvalidSubcommand,
 		},
@@ -296,11 +371,32 @@ func TestParseArgs(t *testing.T) {
 			expectError:   true,
 			expectedError: errPathTraversal,
 		},
+		{
+			name:               "init subcommand with default path",
+			args:               []string{"init"},
+			expectedIsInit:     true,
+			expectedConfigPath: filepath.Join("/test/home", ".codemender", "config.yaml"),
+			expectError:        false,
+		},
+		{
+			name:               "init subcommand with explicit config path",
+			args:               []string{"init", "/custom/path/config.yaml"},
+			expectedIsInit:     true,
+			expectedConfigPath: "/custom/path/config.yaml",
+			expectError:        false,
+		},
+		{
+			name:           "init subcommand with help flag",
+			args:           []string{"init", "--help"},
+			expectedIsInit: true,
+			expectedIsHelp: true,
+			expectError:    false,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmds, targetDir, isShell, err := parseArgs(tmpDir, tc.args)
+			cmds, targetDir, isShell, isInit, configPath, isHelp, err := parseArgs(tmpDir, tc.args)
 			if tc.expectError {
 				if err == nil {
 					t.Fatalf("expected error, got commands: %+v", cmds)
@@ -312,6 +408,19 @@ func TestParseArgs(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
+				if isInit != tc.expectedIsInit {
+					t.Errorf("expected isInit %v, got %v", tc.expectedIsInit, isInit)
+				}
+				if tc.expectedIsInit {
+					if isHelp != tc.expectedIsHelp {
+						t.Errorf("expected isHelp %v, got %v", tc.expectedIsHelp, isHelp)
+					}
+					if !tc.expectedIsHelp && configPath != tc.expectedConfigPath {
+						t.Errorf("expected configPath %q, got %q", tc.expectedConfigPath, configPath)
+					}
+					return
+				}
+
 				if isShell != tc.expectedIsShell {
 					t.Errorf("expected isShell %v, got %v", tc.expectedIsShell, isShell)
 				}

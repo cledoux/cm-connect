@@ -7,11 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"cm-connect/pkg/cmconfig"
 	"cm-connect/pkg/cmrunner"
 )
 
 var (
-	errMissingSubcommand = errors.New("missing subcommand: specify 'find' or 'shell'")
+	errMissingSubcommand = errors.New("missing subcommand: specify 'find', 'shell', or 'init'")
 	errInvalidSubcommand = errors.New("unrecognized subcommand")
 	errPathNotFound      = errors.New("scan target path does not exist in workspace")
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
@@ -110,22 +111,42 @@ func parseFindArgs(workspaceRoot string, args []string) (cmds []cmrunner.Command
 	return []cmrunner.Command{findCmd, reportCmd}, workspaceRoot, false, nil
 }
 
-// parseArgs parses raw CLI arguments into executable command sequences or shell parameters.
+// parseInitArgs processes CLI arguments for the 'init' configuration mutation subcommand.
+// Governing: REQ-0002, SPEC-cm-batch-runner
+func parseInitArgs(args []string) (configPath string, isHelp bool, err error) {
+	if isHelpRequested(args) {
+		return "", true, nil
+	}
+	if len(args) > 0 {
+		return args[0], false, nil
+	}
+	path, err := cmconfig.DefaultConfigPath()
+	if err != nil {
+		return "", false, err
+	}
+	return path, false, nil
+}
+
+// parseArgs parses raw CLI arguments into executable command sequences or shell/init parameters.
 // Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
-func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
+func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, isInit bool, configPath string, isHelp bool, err error) {
 	if len(rawArgs) == 0 {
-		return nil, "", false, errMissingSubcommand
+		return nil, "", false, false, "", false, errMissingSubcommand
 	}
 
 	subcommand := rawArgs[0]
 	switch subcommand {
 	case "shell":
 		targetDir, isShell, err := parseShellArgs(workspaceRoot, rawArgs[1:])
-		return nil, targetDir, isShell, err
+		return nil, targetDir, isShell, false, "", false, err
 	case "find":
-		return parseFindArgs(workspaceRoot, rawArgs[1:])
+		cmds, targetDir, isShell, err := parseFindArgs(workspaceRoot, rawArgs[1:])
+		return cmds, targetDir, isShell, false, "", false, err
+	case "init":
+		configPath, isHelp, err := parseInitArgs(rawArgs[1:])
+		return nil, "", false, true, configPath, isHelp, err
 	default:
-		return nil, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+		return nil, "", false, false, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 }
