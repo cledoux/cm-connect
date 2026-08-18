@@ -166,63 +166,40 @@ func TestNormalizePath(t *testing.T) {
 }
 
 func TestParseInitArgs(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", origHome)
-
-	os.Setenv("HOME", "/custom/home")
-
-	t.Run("default path when no args provided", func(t *testing.T) {
-		path, isHelp, err := parseInitArgs([]string{})
+	t.Run("default init when no args provided", func(t *testing.T) {
+		plan, err := parseInitArgs([]string{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if isHelp {
-			t.Errorf("expected isHelp false, got true")
-		}
-		expected := filepath.Join("/custom/home", ".codemender", "config.yaml")
-		if path != expected {
-			t.Errorf("expected path %q, got %q", expected, path)
-		}
-	})
-
-	t.Run("explicit path provided", func(t *testing.T) {
-		path, isHelp, err := parseInitArgs([]string{"/etc/codemender/config.yaml"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if isHelp {
-			t.Errorf("expected isHelp false, got true")
-		}
-		if path != "/etc/codemender/config.yaml" {
-			t.Errorf("expected path '/etc/codemender/config.yaml', got %q", path)
+		if plan.Action != ActionInit {
+			t.Errorf("expected plan.Action ActionInit, got %v", plan.Action)
 		}
 	})
 
 	t.Run("help flag --help", func(t *testing.T) {
-		_, isHelp, err := parseInitArgs([]string{"--help"})
+		plan, err := parseInitArgs([]string{"--help"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !isHelp {
-			t.Errorf("expected isHelp true, got false")
+		if plan.Action != ActionHelp {
+			t.Errorf("expected plan.Action ActionHelp, got %v", plan.Action)
 		}
 	})
 
 	t.Run("help flag -h", func(t *testing.T) {
-		_, isHelp, err := parseInitArgs([]string{"-h"})
+		plan, err := parseInitArgs([]string{"-h"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !isHelp {
-			t.Errorf("expected isHelp true, got false")
+		if plan.Action != ActionHelp {
+			t.Errorf("expected plan.Action ActionHelp, got %v", plan.Action)
 		}
 	})
 
-	t.Run("error when HOME is unset", func(t *testing.T) {
-		os.Unsetenv("HOME")
-		_, _, err := parseInitArgs([]string{})
+	t.Run("error on unexpected positional arguments", func(t *testing.T) {
+		_, err := parseInitArgs([]string{"/custom/path/config.yaml"})
 		if err == nil {
-			t.Errorf("expected error when HOME is unset, got nil")
+			t.Errorf("expected error for unexpected arguments, got nil")
 		}
 	})
 }
@@ -234,24 +211,17 @@ func TestParseArgs(t *testing.T) {
 		t.Fatalf("failed to create temp dirs: %v", err)
 	}
 
-	origHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", origHome)
-	os.Setenv("HOME", "/test/home")
-
 	tests := []struct {
-		name               string
-		args               []string
-		expectedCmdCount   int
-		expectedTarget     string
-		expectedFormat     string
-		expectedScanFlags  []string
-		expectedIsShell    bool
-		expectedTargetDir  string
-		expectedIsInit     bool
-		expectedConfigPath string
-		expectedIsHelp     bool
-		expectError        bool
-		expectedError      error
+		name              string
+		args              []string
+		expectedAction    ActionType
+		expectedCmdCount  int
+		expectedTarget    string
+		expectedFormat    string
+		expectedScanFlags []string
+		expectedTargetDir string
+		expectError       bool
+		expectedError     error
 	}{
 		{
 			name:          "empty args returns missing subcommand error",
@@ -292,16 +262,22 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:              "shell subcommand defaults to workspace root",
 			args:              []string{"shell"},
-			expectedIsShell:   true,
+			expectedAction:    ActionShell,
 			expectedTargetDir: tmpDir,
 			expectError:       false,
 		},
 		{
 			name:              "shell subcommand with scoped path",
 			args:              []string{"shell", "src/auth"},
-			expectedIsShell:   true,
+			expectedAction:    ActionShell,
 			expectedTargetDir: filepath.Join(tmpDir, "src/auth"),
 			expectError:       false,
+		},
+		{
+			name:           "shell subcommand with help flag",
+			args:           []string{"shell", "--help"},
+			expectedAction: ActionHelp,
+			expectError:    false,
 		},
 		{
 			name:          "shell subcommand with non-existent path returns path not found error",
@@ -312,6 +288,7 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:             "find with no target path defaults to dot and json",
 			args:             []string{"find"},
+			expectedAction:   ActionRunSequence,
 			expectedCmdCount: 2,
 			expectedTarget:   ".",
 			expectedFormat:   "json",
@@ -320,6 +297,7 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:             "find with scoped sub-path",
 			args:             []string{"find", "src/auth"},
+			expectedAction:   ActionRunSequence,
 			expectedCmdCount: 2,
 			expectedTarget:   "src/auth",
 			expectedFormat:   "json",
@@ -328,6 +306,7 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:              "find with double-dash separating forwarded flags",
 			args:              []string{"find", "src/auth", "--", "-c", "5", "--unrestricted"},
+			expectedAction:    ActionRunSequence,
 			expectedCmdCount:  2,
 			expectedTarget:    "src/auth",
 			expectedFormat:    "json",
@@ -337,6 +316,7 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:              "find with double-dash and no explicit path defaults to dot",
 			args:              []string{"find", "--", "-c", "5"},
+			expectedAction:    ActionRunSequence,
 			expectedCmdCount:  2,
 			expectedTarget:    ".",
 			expectedFormat:    "json",
@@ -346,18 +326,17 @@ func TestParseArgs(t *testing.T) {
 		{
 			name:             "find with trailing double-dash",
 			args:             []string{"find", "src/auth", "--"},
+			expectedAction:   ActionRunSequence,
 			expectedCmdCount: 2,
 			expectedTarget:   "src/auth",
 			expectedFormat:   "json",
 			expectError:      false,
 		},
 		{
-			name:              "find with help flag returns only find command",
-			args:              []string{"find", "--", "--help"},
-			expectedCmdCount:  1,
-			expectedTarget:    ".",
-			expectedScanFlags: []string{"--help"},
-			expectError:       false,
+			name:           "find with help flag returns ActionHelp",
+			args:           []string{"find", "--", "--help"},
+			expectedAction: ActionHelp,
+			expectError:    false,
 		},
 		{
 			name:          "find with non-existent sub-path returns path not found error",
@@ -372,34 +351,30 @@ func TestParseArgs(t *testing.T) {
 			expectedError: errPathTraversal,
 		},
 		{
-			name:               "init subcommand with default path",
-			args:               []string{"init"},
-			expectedIsInit:     true,
-			expectedConfigPath: filepath.Join("/test/home", ".codemender", "config.yaml"),
-			expectError:        false,
-		},
-		{
-			name:               "init subcommand with explicit config path",
-			args:               []string{"init", "/custom/path/config.yaml"},
-			expectedIsInit:     true,
-			expectedConfigPath: "/custom/path/config.yaml",
-			expectError:        false,
+			name:           "init subcommand returns ActionInit",
+			args:           []string{"init"},
+			expectedAction: ActionInit,
+			expectError:    false,
 		},
 		{
 			name:           "init subcommand with help flag",
 			args:           []string{"init", "--help"},
-			expectedIsInit: true,
-			expectedIsHelp: true,
+			expectedAction: ActionHelp,
 			expectError:    false,
+		},
+		{
+			name:        "init subcommand with unexpected positional argument returns error",
+			args:        []string{"init", "/custom/path.yaml"},
+			expectError: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmds, targetDir, isShell, isInit, configPath, isHelp, err := parseArgs(tmpDir, tc.args)
+			plan, err := parseArgs(tmpDir, tc.args)
 			if tc.expectError {
 				if err == nil {
-					t.Fatalf("expected error, got commands: %+v", cmds)
+					t.Fatalf("expected error, got plan: %+v", plan)
 				}
 				if tc.expectedError != nil && !errors.Is(err, tc.expectedError) {
 					t.Errorf("expected sentinel error %v, got %v", tc.expectedError, err)
@@ -408,35 +383,25 @@ func TestParseArgs(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if isInit != tc.expectedIsInit {
-					t.Errorf("expected isInit %v, got %v", tc.expectedIsInit, isInit)
+				if plan.Action != tc.expectedAction {
+					t.Errorf("expected action %v, got %v", tc.expectedAction, plan.Action)
 				}
-				if tc.expectedIsInit {
-					if isHelp != tc.expectedIsHelp {
-						t.Errorf("expected isHelp %v, got %v", tc.expectedIsHelp, isHelp)
-					}
-					if !tc.expectedIsHelp && configPath != tc.expectedConfigPath {
-						t.Errorf("expected configPath %q, got %q", tc.expectedConfigPath, configPath)
+				if plan.Action == ActionHelp || plan.Action == ActionInit {
+					return
+				}
+				if plan.Action == ActionShell {
+					if plan.TargetDir != tc.expectedTargetDir {
+						t.Errorf("expected targetDir %q, got %q", tc.expectedTargetDir, plan.TargetDir)
 					}
 					return
 				}
 
-				if isShell != tc.expectedIsShell {
-					t.Errorf("expected isShell %v, got %v", tc.expectedIsShell, isShell)
+				if len(plan.Commands) != tc.expectedCmdCount {
+					t.Fatalf("expected %d commands, got %d", tc.expectedCmdCount, len(plan.Commands))
 				}
-				if tc.expectedIsShell {
-					if targetDir != tc.expectedTargetDir {
-						t.Errorf("expected targetDir %q, got %q", tc.expectedTargetDir, targetDir)
-					}
-					return
-				}
-
-				if len(cmds) != tc.expectedCmdCount {
-					t.Fatalf("expected %d commands, got %d", tc.expectedCmdCount, len(cmds))
-				}
-				findCmd, ok := cmds[0].(*cmrunner.FindCommand)
+				findCmd, ok := plan.Commands[0].(*cmrunner.FindCommand)
 				if !ok {
-					t.Fatalf("expected cmds[0] to be *cmrunner.FindCommand, got %T", cmds[0])
+					t.Fatalf("expected cmds[0] to be *cmrunner.FindCommand, got %T", plan.Commands[0])
 				}
 				if findCmd.TargetPath != tc.expectedTarget {
 					t.Errorf("expected target %q, got %q", tc.expectedTarget, findCmd.TargetPath)
@@ -446,9 +411,9 @@ func TestParseArgs(t *testing.T) {
 				}
 
 				if tc.expectedCmdCount > 1 {
-					reportCmd, ok := cmds[1].(*cmrunner.ReportCommand)
+					reportCmd, ok := plan.Commands[1].(*cmrunner.ReportCommand)
 					if !ok {
-						t.Fatalf("expected cmds[1] to be *cmrunner.ReportCommand, got %T", cmds[1])
+						t.Fatalf("expected cmds[1] to be *cmrunner.ReportCommand, got %T", plan.Commands[1])
 					}
 					if reportCmd.Format != tc.expectedFormat {
 						t.Errorf("expected format %q, got %q", tc.expectedFormat, reportCmd.Format)

@@ -374,6 +374,65 @@ func TestMutateConfigFile_Errors(t *testing.T) {
 	})
 }
 
+func TestMutateConfigWithOverrides(t *testing.T) {
+	customConfig := `
+server:
+  port: 8080
+scan:
+  timeout: 10
+  extensions:
+    include:
+      - ".go"
+`
+	overrides := map[string]any{
+		"server.port":             9090,
+		"scan.timeout":            60,
+		"scan.extensions.include": []string{".py", ".rs"},
+	}
+
+	mutated, err := MutateConfigWithOverrides([]byte(customConfig), overrides)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed struct {
+		Server struct {
+			Port int `yaml:"port"`
+		} `yaml:"server"`
+		Scan struct {
+			Timeout    int `yaml:"timeout"`
+			Extensions struct {
+				Include []string `yaml:"include"`
+			} `yaml:"extensions"`
+		} `yaml:"scan"`
+	}
+
+	if err := yaml.Unmarshal(mutated, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal mutated YAML: %v", err)
+	}
+
+	if parsed.Server.Port != 9090 {
+		t.Errorf("expected server.port 9090, got %d", parsed.Server.Port)
+	}
+	if parsed.Scan.Timeout != 60 {
+		t.Errorf("expected scan.timeout 60, got %d", parsed.Scan.Timeout)
+	}
+	expectedIncludes := []string{".go", ".py", ".rs"}
+	if len(parsed.Scan.Extensions.Include) != len(expectedIncludes) {
+		t.Errorf("expected %d includes, got %v", len(expectedIncludes), parsed.Scan.Extensions.Include)
+	}
+
+	t.Run("unsupported type error", func(t *testing.T) {
+		badOverrides := map[string]any{
+			"server.port": struct{}{},
+		}
+		_, err := MutateConfigWithOverrides([]byte(customConfig), badOverrides)
+		if err == nil {
+			t.Errorf("expected error for unsupported override value type, got nil")
+		}
+	})
+}
+
 func TestDefaultConfigPath(t *testing.T) {
 	// Test DefaultConfigPath with HOME set
 	origHome := os.Getenv("HOME")

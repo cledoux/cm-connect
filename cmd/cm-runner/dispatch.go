@@ -7,9 +7,28 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cm-connect/pkg/cmconfig"
 	"cm-connect/pkg/cmrunner"
 )
+
+// ActionType represents the execution action determined by argument parsing.
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner
+type ActionType int
+
+const (
+	ActionNone ActionType = iota
+	ActionHelp
+	ActionInit
+	ActionShell
+	ActionRunSequence
+)
+
+// DispatchPlan encapsulates the routing decision and associated execution parameters.
+// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner
+type DispatchPlan struct {
+	Action    ActionType
+	Commands  []cmrunner.Command
+	TargetDir string
+}
 
 var (
 	errMissingSubcommand = errors.New("missing subcommand: specify 'find', 'shell', or 'init'")
@@ -74,21 +93,31 @@ func isHelpRequested(flags []string) bool {
 }
 
 // parseShellArgs processes CLI arguments for the interactive 'shell' subcommand.
-func parseShellArgs(workspaceRoot string, args []string) (targetDir string, isShell bool, err error) {
+func parseShellArgs(workspaceRoot string, args []string) (DispatchPlan, error) {
+	if isHelpRequested(args) {
+		return DispatchPlan{Action: ActionHelp}, nil
+	}
 	target := "."
 	if len(args) > 0 {
 		target = args[0]
 	}
 	relPath, err := normalizePath(workspaceRoot, target)
 	if err != nil {
-		return "", false, err
+		return DispatchPlan{}, err
 	}
-	return filepath.Join(workspaceRoot, relPath), true, nil
+	return DispatchPlan{
+		Action:    ActionShell,
+		TargetDir: filepath.Join(workspaceRoot, relPath),
+	}, nil
 }
 
 // parseFindArgs processes CLI arguments for the two-phase 'find' scan and report pipeline.
-func parseFindArgs(workspaceRoot string, args []string) (cmds []cmrunner.Command, targetDir string, isShell bool, err error) {
+func parseFindArgs(workspaceRoot string, args []string) (DispatchPlan, error) {
 	beforeDash, afterDash := partitionDash(args)
+
+	if isHelpRequested(beforeDash) || isHelpRequested(afterDash) {
+		return DispatchPlan{Action: ActionHelp}, nil
+	}
 
 	target := "."
 	if len(beforeDash) > 0 {
@@ -97,56 +126,49 @@ func parseFindArgs(workspaceRoot string, args []string) (cmds []cmrunner.Command
 
 	normalizedTarget, err := normalizePath(workspaceRoot, target)
 	if err != nil {
-		return nil, "", false, err
+		return DispatchPlan{}, err
 	}
 
 	findCmd := cmrunner.NewFindCommand(normalizedTarget)
 	findCmd.Flags = afterDash
 
-	if isHelpRequested(findCmd.Flags) {
-		return []cmrunner.Command{findCmd}, workspaceRoot, false, nil
-	}
-
 	reportCmd := cmrunner.NewReportCommand("json")
-	return []cmrunner.Command{findCmd, reportCmd}, workspaceRoot, false, nil
+	return DispatchPlan{
+		Action:   ActionRunSequence,
+		Commands: []cmrunner.Command{findCmd, reportCmd},
+	}, nil
 }
 
 // parseInitArgs processes CLI arguments for the 'init' configuration mutation subcommand.
+// CodeMender always uses $HOME/.codemender/config.yaml, so init takes no positional path.
 // Governing: REQ-0002, SPEC-cm-batch-runner
-func parseInitArgs(args []string) (configPath string, isHelp bool, err error) {
+func parseInitArgs(args []string) (DispatchPlan, error) {
 	if isHelpRequested(args) {
-		return "", true, nil
+		return DispatchPlan{Action: ActionHelp}, nil
 	}
 	if len(args) > 0 {
-		return args[0], false, nil
+		return DispatchPlan{}, fmt.Errorf("unexpected arguments for 'init': 'init' takes no arguments (always mutates $HOME/.codemender/config.yaml)")
 	}
-	path, err := cmconfig.DefaultConfigPath()
-	if err != nil {
-		return "", false, err
-	}
-	return path, false, nil
+	return DispatchPlan{Action: ActionInit}, nil
 }
 
-// parseArgs parses raw CLI arguments into executable command sequences or shell/init parameters.
+// parseArgs parses raw CLI arguments into a DispatchPlan.
 // Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
 // Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
-func parseArgs(workspaceRoot string, rawArgs []string) (cmds []cmrunner.Command, targetDir string, isShell bool, isInit bool, configPath string, isHelp bool, err error) {
+func parseArgs(workspaceRoot string, rawArgs []string) (DispatchPlan, error) {
 	if len(rawArgs) == 0 {
-		return nil, "", false, false, "", false, errMissingSubcommand
+		return DispatchPlan{}, errMissingSubcommand
 	}
 
 	subcommand := rawArgs[0]
 	switch subcommand {
 	case "shell":
-		targetDir, isShell, err := parseShellArgs(workspaceRoot, rawArgs[1:])
-		return nil, targetDir, isShell, false, "", false, err
+		return parseShellArgs(workspaceRoot, rawArgs[1:])
 	case "find":
-		cmds, targetDir, isShell, err := parseFindArgs(workspaceRoot, rawArgs[1:])
-		return cmds, targetDir, isShell, false, "", false, err
+		return parseFindArgs(workspaceRoot, rawArgs[1:])
 	case "init":
-		configPath, isHelp, err := parseInitArgs(rawArgs[1:])
-		return nil, "", false, true, configPath, isHelp, err
+		return parseInitArgs(rawArgs[1:])
 	default:
-		return nil, "", false, false, "", false, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
+		return DispatchPlan{}, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 }

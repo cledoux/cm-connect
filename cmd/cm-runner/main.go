@@ -38,13 +38,12 @@ func printUsage(w io.Writer) {
 Usage:
   cm-runner find [path] [-- [flags]]     Run CodeMender vulnerability scan on full repo or sub-path
   cm-runner shell [path]                 Launch interactive /bin/bash shell in /workspace (requires -it)
-  cm-runner init [path]                  Pre-seed and apply headless configuration defaults in-place
+  cm-runner init                         Pre-seed and apply headless configuration defaults in-place
 
 Arguments:
   [path]               For find/shell: Scans repository at /workspace (default: '.') or scoped sub-path.
-                       For init: Target config.yaml file path (default: $HOME/.codemender/config.yaml).
   [-- [flags...]]      Optional flags forwarded directly to CodeMender CLI.
-                       Defaults to '--format json' on stdout unless overridden (-f, --format, --help).
+                       Emits structured JSON findings on stdout.
                        Diagnostics and progress logs are routed to stderr.
 
 Exit Codes:
@@ -59,33 +58,38 @@ Exit Codes:
 // run parses arguments and orchestrates execution of the target subcommand.
 // Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
-	cmds, targetDir, isShell, isInit, configPath, isHelp, err := parseArgs(workspaceDir, args)
+	plan, err := parseArgs(workspaceDir, args)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		printUsage(stderr)
 		return cmrunner.ExitUsage
 	}
 
-	if isInit {
-		if isHelp {
-			printUsage(stdout)
-			return cmrunner.ExitClean
+	switch plan.Action {
+	case ActionHelp:
+		printUsage(stdout)
+		return cmrunner.ExitClean
+
+	case ActionInit:
+		configPath, err := cmconfig.DefaultConfigPath()
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: failed to determine default config path: %v\n", err)
+			return cmrunner.ExitError
 		}
 		if err := cmconfig.MutateConfigFile(configPath); err != nil {
 			fmt.Fprintf(stderr, "Error: failed to initialize configuration: %v\n", err)
 			return cmrunner.ExitError
 		}
 		return cmrunner.ExitClean
-	}
 
-	if isShell {
+	case ActionShell:
 		if !isTerminalFn(stdin) {
 			fmt.Fprintln(stderr, "Error: 'shell' subcommand requires an interactive terminal. Please run with 'docker run -it <image> shell'")
 			return cmrunner.ExitUsage
 		}
 
-		if err := os.Chdir(targetDir); err != nil {
-			fmt.Fprintf(stderr, "Error: failed to change directory to %s: %v\n", targetDir, err)
+		if err := os.Chdir(plan.TargetDir); err != nil {
+			fmt.Fprintf(stderr, "Error: failed to change directory to %s: %v\n", plan.TargetDir, err)
 			return cmrunner.ExitError
 		}
 
@@ -99,16 +103,20 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 			return cmrunner.ExitError
 		}
 		return cmrunner.ExitClean
+
+	case ActionRunSequence:
+		runner := cmrunner.NewRunner(
+			cmrunner.WithExecutable(cmPath),
+			cmrunner.WithWorkspace(workspaceDir),
+		)
+
+		ctx := context.Background()
+		code, _ := runner.RunSequence(ctx, plan.Commands, stdin, stdout, stderr)
+		return code
+
+	default:
+		return cmrunner.ExitUsage
 	}
-
-	runner := cmrunner.NewRunner(
-		cmrunner.WithExecutable(cmPath),
-		cmrunner.WithWorkspace(workspaceDir),
-	)
-
-	ctx := context.Background()
-	code, _ := runner.RunSequence(ctx, cmds, stdin, stdout, stderr)
-	return code
 }
 
 func main() {

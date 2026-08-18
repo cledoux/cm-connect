@@ -268,28 +268,6 @@ func TestRun_Init_DefaultPath_Success(t *testing.T) {
 	}
 }
 
-func TestRun_Init_ExplicitPath_Success(t *testing.T) {
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "custom-config.yaml")
-	if err := os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600); err != nil {
-		t.Fatalf("failed to write config: %v", err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"init", configPath}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
-	if code != cmrunner.ExitClean {
-		t.Fatalf("expected ExitClean (0), got %d (stderr: %s)", code, stderr.String())
-	}
-
-	mutatedContent, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read mutated config: %v", err)
-	}
-	if !strings.Contains(string(mutatedContent), ".rs") {
-		t.Errorf("expected .rs in mutated config, got:\n%s", string(mutatedContent))
-	}
-}
-
 func TestRun_Init_Help(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	tmpDir := t.TempDir()
@@ -304,10 +282,13 @@ func TestRun_Init_Help(t *testing.T) {
 }
 
 func TestRun_Init_MissingConfigFile(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	tmpDir := t.TempDir()
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
 
-	code := run([]string{"init", "/non/existent/config.yaml"}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init"}, strings.NewReader(""), &stdout, &stderr, tmpHome, "/bin/true")
 	if code != cmrunner.ExitError {
 		t.Fatalf("expected ExitError (>2), got %d", code)
 	}
@@ -316,8 +297,32 @@ func TestRun_Init_MissingConfigFile(t *testing.T) {
 	}
 }
 
+func TestRun_Init_HomeUnset(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Unsetenv("HOME")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"init"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitError {
+		t.Fatalf("expected ExitError when HOME is unset, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "failed to determine default config path") {
+		t.Errorf("expected default config path error on stderr, got:\n%s", stderr.String())
+	}
+}
+
 func TestRun_Init_MissingCriticalKey_FailsFast(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	if err := os.MkdirAll(cmDir, 0755); err != nil {
+		t.Fatalf("failed to make .codemender dir: %v", err)
+	}
+
 	badConfig := `
 scan:
   extensions:
@@ -326,13 +331,13 @@ scan:
 output:
   format: "table"
 `
-	configPath := filepath.Join(tmpDir, "bad-config.yaml")
+	configPath := filepath.Join(cmDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(badConfig), 0600); err != nil {
 		t.Fatalf("failed to write bad config: %v", err)
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"init", configPath}, strings.NewReader(""), &stdout, &stderr, tmpDir, "/bin/true")
+	code := run([]string{"init"}, strings.NewReader(""), &stdout, &stderr, tmpHome, "/bin/true")
 	if code != cmrunner.ExitError {
 		t.Fatalf("expected ExitError (>2), got %d", code)
 	}

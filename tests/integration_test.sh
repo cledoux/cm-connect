@@ -269,8 +269,10 @@ set +e
 OUT_HELP=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" init --help 2>&1)
 EXIT_HELP=$?
 
-# Test in-place mutation of a mounted config file
-SAMPLE_INIT_CONFIG="${TEST_WORKSPACE}/init-test-config.yaml"
+# Test in-place mutation of $HOME/.codemender/config.yaml
+MOCK_HOME="${TEST_WORKSPACE}/mock-home"
+mkdir -p "${MOCK_HOME}/.codemender"
+SAMPLE_INIT_CONFIG="${MOCK_HOME}/.codemender/config.yaml"
 cat << 'EOF' > "${SAMPLE_INIT_CONFIG}"
 scan:
   extensions:
@@ -284,7 +286,7 @@ tools:
   confirm_writes: true
 EOF
 
-OUT_MUTATE=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" init /workspace/init-test-config.yaml 2>&1)
+OUT_MUTATE=$(run_with_timeout 10 docker run --rm -e "HOME=/mock-home" -v "${MOCK_HOME}:/mock-home" "${IMAGE_NAME}" init 2>&1)
 EXIT_MUTATE=$?
 MUTATED_FILE_CONTENT=$(cat "${SAMPLE_INIT_CONFIG}")
 set -e
@@ -294,7 +296,7 @@ if [ ${EXIT_HELP} -eq 0 ] && [[ "${OUT_HELP}" == *"cm-runner init"* ]] && \
    [[ "${MUTATED_FILE_CONTENT}" == *".rs"* ]] && \
    [[ "${MUTATED_FILE_CONTENT}" == *"confirm_commands: false"* ]] && \
    [[ "${MUTATED_FILE_CONTENT}" == *"confirm_writes: false"* ]]; then
-    pass "Executing 'init' in container supports --help and correctly mutates target config in-place"
+    pass "Executing 'init' in container supports --help and correctly mutates $HOME/.codemender/config.yaml in-place"
 elif [ ${EXIT_HELP} -eq 124 ] || [ ${EXIT_MUTATE} -eq 124 ]; then
     fail "Init subcommand test timed out after 10s"
 else
