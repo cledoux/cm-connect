@@ -14,17 +14,31 @@ func TestNewFindCommand(t *testing.T) {
 		expectedPath string
 	}{
 		{
-			name:         "defaults to dot when empty",
+			name:         "defaults to dot and injects -y when empty",
 			target:       "",
 			flags:        nil,
-			expectedCmd:  []string{"find", "."},
+			expectedCmd:  []string{"find", ".", "-y"},
 			expectedPath: ".",
 		},
 		{
-			name:         "preserves target path and sets flags via SetArgs",
+			name:         "preserves target path and does not duplicate -y flag",
 			target:       "src/auth",
 			flags:        []string{"-y", "--unrestricted"},
 			expectedCmd:  []string{"find", "src/auth", "-y", "--unrestricted"},
+			expectedPath: "src/auth",
+		},
+		{
+			name:         "injects -y when custom scan flags provided without -y",
+			target:       "src/auth",
+			flags:        []string{"-c", "5", "--unrestricted"},
+			expectedCmd:  []string{"find", "src/auth", "-y", "-c", "5", "--unrestricted"},
+			expectedPath: "src/auth",
+		},
+		{
+			name:         "does not inject -y when help flag is requested",
+			target:       "src/auth",
+			flags:        []string{"--help"},
+			expectedCmd:  []string{"find", "src/auth", "--help"},
 			expectedPath: "src/auth",
 		},
 	}
@@ -53,7 +67,7 @@ func TestNewFindCommand(t *testing.T) {
 
 func TestFindCommand_EmptyTargetPath_DefaultsToDot(t *testing.T) {
 	cmd := &FindCommand{TargetPath: ""}
-	expected := []string{"find", "."}
+	expected := []string{"find", ".", "-y"}
 	if !reflect.DeepEqual(cmd.Cmd(), expected) {
 		t.Errorf("expected %v, got %v", expected, cmd.Cmd())
 	}
