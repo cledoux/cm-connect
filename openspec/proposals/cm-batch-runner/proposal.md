@@ -33,7 +33,10 @@ explicitly scoped out of this proposal:
 - Scope the container execution protocol strictly to the **`find`**
   vulnerability scanner phase.
 - Pre-initialize default CodeMender configuration during Docker image build time
-  so that runtime `cm init` is completely unnecessary.
+  via `cm init`, applying minimal in-place headless configuration overrides
+  (`.rs` file extension inclusion, `json` output format, disabled command/write
+  confirmations) and fail-fast validation of critical keys via a reusable
+  configuration mutator so that runtime `cm init` is completely unnecessary.
 - Provide a completely stateless execution model where runs depend strictly on
   mounted codebase and authentication inputs.
 - Create a statically-compiled Go entrypoint runner binary
@@ -42,8 +45,8 @@ explicitly scoped out of this proposal:
   by `cm report --format=json`) on stdout.
 - Ensure clean I/O separation (machine-readable findings JSON on stdout, logs
   and progress indicators on stderr).
-- Support idempotent argument multiplexing (`cm find`, `find`, or default
-  execution with no arguments) with interactive TTY `/bin/bash` fallback.
+- Enforce exact subcommand dispatch on `os.Args[1]` (`find`, `shell`, or `init`)
+  with interactive TTY `/bin/bash` fallback.
 - Strictly enforce unprivileged non-root userspace execution (user `codemender`,
   UID 1000, GID 1000).
 - Support multi-mode Google Cloud authentication (OAuth access token env var,
