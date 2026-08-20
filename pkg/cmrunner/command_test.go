@@ -138,3 +138,94 @@ func TestReportCommand_EmptyFormat_DefaultsToJson(t *testing.T) {
 		t.Errorf("expected %v, got %v", expected, cmd.Cmd())
 	}
 }
+
+func TestNewFixCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		findingID   string
+		flags       []string
+		expectedCmd []string
+	}{
+		{
+			name:        "defaults to inject -y and --unrestricted",
+			findingID:   "uuid-1234",
+			flags:       nil,
+			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted"},
+		},
+		{
+			name:        "forwards passthrough flags verbatim after headless defaults",
+			findingID:   "uuid-1234",
+			flags:       []string{"-c", "Sanitize input", "--architecture=3-1"},
+			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted", "-c", "Sanitize input", "--architecture=3-1"},
+		},
+		{
+			name:        "does not duplicate -y or --unrestricted when already present in flags",
+			findingID:   "uuid-5678",
+			flags:       []string{"-y", "--unrestricted", "--model=gemini"},
+			expectedCmd: []string{"fix", "uuid-5678", "-y", "--unrestricted", "--model=gemini"},
+		},
+		{
+			name:        "empty finding id defaults to unknown",
+			findingID:   "",
+			flags:       nil,
+			expectedCmd: []string{"fix", "unknown", "-y", "--unrestricted"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewFixCommand(tc.findingID)
+			if len(tc.flags) > 0 {
+				leftover, err := cmd.SetArgs(tc.flags...)
+				if err != nil {
+					t.Fatalf("unexpected error from SetArgs: %v", err)
+				}
+				if len(leftover) != 0 {
+					t.Errorf("expected 0 leftover args, got %v", leftover)
+				}
+			}
+			if !reflect.DeepEqual(cmd.Cmd(), tc.expectedCmd) {
+				t.Errorf("expected Cmd() %v, got %v", tc.expectedCmd, cmd.Cmd())
+			}
+		})
+	}
+}
+
+func TestNewImportCommand(t *testing.T) {
+	tests := []struct {
+		name         string
+		importFile   string
+		workspaceDir string
+		expectedCmd  []string
+	}{
+		{
+			name:         "standard import parameters",
+			importFile:   "/tmp/cm-import.json",
+			workspaceDir: "/workspace",
+			expectedCmd:  []string{"report", "import", "-f", "/tmp/cm-import.json", "-p", "/workspace"},
+		},
+		{
+			name:         "empty parameters default to standard paths",
+			importFile:   "",
+			workspaceDir: "",
+			expectedCmd:  []string{"report", "import", "-f", "/tmp/cm-import.json", "-p", "/workspace"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewImportCommand(tc.importFile, tc.workspaceDir)
+			if !reflect.DeepEqual(cmd.Cmd(), tc.expectedCmd) {
+				t.Errorf("expected Cmd() %v, got %v", tc.expectedCmd, cmd.Cmd())
+			}
+		})
+	}
+
+	t.Run("empty struct Cmd defaults", func(t *testing.T) {
+		cmd := &ImportCommand{}
+		expected := []string{"report", "import", "-f", "/tmp/cm-import.json", "-p", "/workspace"}
+		if !reflect.DeepEqual(cmd.Cmd(), expected) {
+			t.Errorf("expected %v, got %v", expected, cmd.Cmd())
+		}
+	})
+}

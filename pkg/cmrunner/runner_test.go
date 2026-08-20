@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -413,5 +414,357 @@ func TestEvaluateReportExitCode(t *testing.T) {
 				t.Errorf("for input %q: expected exit code %d, got %d", tc.input, tc.expected, result)
 			}
 		})
+	}
+}
+
+func TestRunner_RunFixPipeline_Success_Fixed(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		t.Fatalf("failed to create ws dir: %v", err)
+	}
+
+	// Initialize git repo in workspace
+	cmdInit := exec.Command("git", "init")
+	cmdInit.Dir = wsDir
+	_ = cmdInit.Run()
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	storeFile := filepath.Join(wsDir, "store.go")
+	_ = os.WriteFile(storeFile, []byte("package store\nfunc Old() {}\n"), 0644)
+	cmdAdd := exec.Command("git", "add", "store.go")
+	cmdAdd.Dir = wsDir
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = wsDir
+	_ = cmdCommit.Run()
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    echo "import progress log" >&2
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"478a8868-uuid","Title":"SQLi","VulnType":"CWE-89","Analysis":"parameterize"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    echo "fix reasoning telemetry" >&2
+    # Modify store.go in workspace
+    echo "package store\nfunc New() {}\n" > store.go
+    exit 0
+fi
+echo "unknown subcommand: $*" >&2
+exit 2
+`
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write mock script: %v", err)
+	}
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	rawFinding := []byte(`{
+		"FilePath": "store.go",
+		"StartLine": 2,
+		"Title": "SQLi",
+		"Analysis": "parameterize",
+		"Severity": "HIGH",
+		"VulnType": "CWE-89",
+		"Snippet": "func Old() {}"
+	}`)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+
+	code, err := runner.RunFixPipeline(ctx, rawFinding, []string{"-c", "Sanitize"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunFixPipeline failed: %v", err)
+	}
+	if code != ExitClean {
+		t.Errorf("expected ExitClean (0), got %d", code)
+	}
+
+	outStr := stdout.String()
+	if !strings.Contains(outStr, `"status": "FIXED"`) {
+		t.Errorf("expected FIXED status in stdout envelope, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "478a8868-uuid") {
+		t.Errorf("expected finding ID in stdout envelope, got: %s", outStr)
+	}
+
+	errStr := stderr.String()
+	if !strings.Contains(errStr, "import progress log") || !strings.Contains(errStr, "fix reasoning telemetry") {
+		t.Errorf("expected stderr to contain progress logs, got: %s", errStr)
+	}
+}
+
+func TestRunner_RunFixPipeline_Unresolved_EmptyDiff(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+
+	cmdInit := exec.Command("git", "init")
+	cmdInit.Dir = wsDir
+	_ = cmdInit.Run()
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	storeFile := filepath.Join(wsDir, "store.go")
+	_ = os.WriteFile(storeFile, []byte("package store\n"), 0644)
+	cmdAdd := exec.Command("git", "add", "store.go")
+	cmdAdd.Dir = wsDir
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = wsDir
+	_ = cmdCommit.Run()
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"unresolved-uuid","Title":"Complex Issue"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    # No modifications
+    exit 0
+fi
+exit 2
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	rawFinding := []byte(`{"FilePath": "store.go", "Title": "Complex Issue"}`)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+
+	code, err := runner.RunFixPipeline(ctx, rawFinding, nil, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunFixPipeline failed: %v", err)
+	}
+	if code != ExitFindings {
+		t.Errorf("expected ExitFindings (1) on unresolved fix, got %d", code)
+	}
+
+	outStr := stdout.String()
+	if !strings.Contains(outStr, `"status": "UNRESOLVED"`) {
+		t.Errorf("expected UNRESOLVED status in stdout envelope, got: %s", outStr)
+	}
+}
+
+func TestRunner_RunFixPipeline_InvalidFindingJSON(t *testing.T) {
+	runner := NewRunner(WithWorkspace(t.TempDir()))
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+
+	code, err := runner.RunFixPipeline(ctx, []byte(`{invalid`), nil, &stdout, &stderr)
+	if code != ExitUsage {
+		t.Errorf("expected ExitUsage (2), got %d", code)
+	}
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestRunner_RunFixPipeline_ImportFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, "foo.go"), []byte("package foo\n"), 0644)
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    echo "fatal import crash" >&2
+    exit 3
+fi
+exit 0
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+
+	code, err := runner.RunFixPipeline(ctx, []byte(`{"FilePath": "foo.go", "Title": "Issue"}`), nil, &stdout, &stderr)
+	if code != ExitError {
+		t.Errorf("expected ExitError (3), got %d", code)
+	}
+	if err == nil {
+		t.Error("expected error from failed import, got nil")
+	}
+}
+
+func TestRunner_RunFixPipeline_ReportFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, "foo.go"), []byte("package foo\n"), 0644)
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo "database query error" >&2
+    exit 3
+fi
+exit 0
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+
+	code, err := runner.RunFixPipeline(ctx, []byte(`{"FilePath": "foo.go", "Title": "Issue"}`), nil, &stdout, &stderr)
+	if code != ExitError {
+		t.Errorf("expected ExitError (3), got %d", code)
+	}
+	if err == nil {
+		t.Error("expected error from failed report, got nil")
+	}
+}
+
+func TestExtractFindingID(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expectedID  string
+		expectError bool
+	}{
+		{
+			name:       "array with FindingID",
+			input:      `[{"FindingID": "f-123"}]`,
+			expectedID: "f-123",
+		},
+		{
+			name:       "array with finding_id",
+			input:      `[{"finding_id": "f-456"}]`,
+			expectedID: "f-456",
+		},
+		{
+			name:       "array with ID",
+			input:      `[{"ID": "f-789"}]`,
+			expectedID: "f-789",
+		},
+		{
+			name:       "array with id",
+			input:      `[{"id": "f-abc"}]`,
+			expectedID: "f-abc",
+		},
+		{
+			name:       "single object with FindingID",
+			input:      `{"FindingID": "f-obj"}`,
+			expectedID: "f-obj",
+		},
+		{
+			name:       "single object with finding_id",
+			input:      `{"finding_id": "f-obj-alt"}`,
+			expectedID: "f-obj-alt",
+		},
+		{
+			name:       "single object with ID",
+			input:      `{"ID": "f-obj-id"}`,
+			expectedID: "f-obj-id",
+		},
+		{
+			name:       "single object with id",
+			input:      `{"id": "f-obj-id-lower"}`,
+			expectedID: "f-obj-id-lower",
+		},
+		{
+			name:        "empty array",
+			input:       `[]`,
+			expectError: true,
+		},
+		{
+			name:        "empty string",
+			input:       ``,
+			expectError: true,
+		},
+		{
+			name:        "invalid JSON array",
+			input:       `[invalid`,
+			expectError: true,
+		},
+		{
+			name:        "invalid JSON object",
+			input:       `{invalid`,
+			expectError: true,
+		},
+		{
+			name:        "primitive JSON",
+			input:       `12345`,
+			expectError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := extractFindingID([]byte(tc.input))
+			if tc.expectError && err == nil {
+				t.Errorf("expected error, got nil (id=%q)", id)
+			}
+			if !tc.expectError {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if id != tc.expectedID {
+					t.Errorf("expected id %q, got %q", tc.expectedID, id)
+				}
+			}
+		})
+	}
+}
+
+func TestRunner_RunFixPipeline_NilStreams(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, "foo.go"), []byte("package foo\n"), 0644)
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"uuid-nil-streams"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    exit 0
+fi
+exit 0
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	ctx := context.Background()
+	code, err := runner.RunFixPipeline(ctx, []byte(`{"FilePath": "foo.go", "Title": "Issue"}`), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != ExitFindings { // ExitFindings (1) because no diff produced
+		t.Errorf("expected ExitFindings (1), got %d", code)
 	}
 }

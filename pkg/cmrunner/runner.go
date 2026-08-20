@@ -11,6 +11,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"cm-connect/pkg/cmfinding"
+	"cm-connect/pkg/cmpatch"
 )
 
 const (
@@ -267,4 +270,145 @@ func EvaluateReportExitCode(reportOutput string) int {
 	}
 
 	return ExitClean
+}
+
+// RunFixPipeline executes the 5-stage stateless remediation workflow.
+// Governing: ADR-0002, ADR-0003, ADR-0005, SPEC-cm-fix-runner, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009, REQ-0010
+func (r *Runner) RunFixPipeline(
+	ctx context.Context,
+	rawFindingJSON []byte,
+	passthroughFlags []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) (int, error) {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+
+	// Stage 1: Ingestion & Schema Normalization (pkg/cmfinding)
+	importBytes, imported, err := cmfinding.Normalize(rawFindingJSON, r.Workspace)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: failed to normalize finding JSON: %v\n", err)
+		return ExitUsage, err
+	}
+
+	// Write to temporary file for cm report import
+	tmpFile, err := os.CreateTemp("", "cm-import-*.json")
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: failed to create temporary import file: %v\n", err)
+		return ExitError, err
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(importBytes); err != nil {
+		tmpFile.Close()
+		fmt.Fprintf(stderr, "Error: failed to write to temporary import file: %v\n", err)
+		return ExitError, err
+	}
+	tmpFile.Close()
+
+	// Stage 2: State Seeding via cm report import (Subprocess)
+	importCmd := NewImportCommand(tmpFile.Name(), r.Workspace)
+	code, err := r.execSubprocess(ctx, importCmd.Cmd(), nil, stderr, stderr)
+	if err != nil || code != ExitClean {
+		if code == ExitClean {
+			code = ExitError
+		}
+		return code, fmt.Errorf("failed to import finding into ephemeral state: %w", err)
+	}
+
+	// Stage 3: Finding ID Resolution via cm report --format=json (Subprocess)
+	reportCmd := NewReportCommand("json")
+	var reportBuf bytes.Buffer
+	code, err = r.execSubprocess(ctx, reportCmd.Cmd(), nil, &reportBuf, stderr)
+	if err != nil || code != ExitClean {
+		if code == ExitClean {
+			code = ExitError
+		}
+		return code, fmt.Errorf("failed to query ephemeral findings from cm report: %w", err)
+	}
+
+	findingID, err := extractFindingID(reportBuf.Bytes())
+	if err != nil || findingID == "" {
+		if err != nil {
+			return ExitError, fmt.Errorf("failed to resolve FindingID from cm report: %w", err)
+		}
+		findingID = "unknown"
+	}
+
+	// Stage 4: Fix Execution via cm fix <FindingID> -y --unrestricted [passthrough flags]
+	fixCmd := NewFixCommand(findingID, passthroughFlags...)
+	_, _ = r.execSubprocess(ctx, fixCmd.Cmd(), nil, stderr, stderr)
+
+	// Stage 5: Patch Extraction & Change Envelope Synthesis (pkg/cmpatch)
+	diffStr, err := cmpatch.ExtractPatch(ctx, r.Workspace, "/workspace-ro")
+	if err != nil {
+		fmt.Fprintf(stderr, "Warning: error extracting patch: %v\n", err)
+	}
+
+	envelope, err := cmpatch.SynthesizeEnvelope(findingID, imported.VulnType, imported.Title, imported.Message, diffStr)
+	if err != nil {
+		return ExitError, fmt.Errorf("failed to synthesize change envelope: %w", err)
+	}
+
+	envBytes, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return ExitError, fmt.Errorf("failed to marshal change envelope JSON: %w", err)
+	}
+
+	fmt.Fprintln(stdout, string(envBytes))
+
+	if envelope.Status == "FIXED" {
+		return ExitClean, nil
+	}
+	return ExitFindings, nil
+}
+
+func extractFindingID(reportJSON []byte) (string, error) {
+	trimmed := bytes.TrimSpace(reportJSON)
+	if len(trimmed) == 0 {
+		return "", fmt.Errorf("empty report JSON output")
+	}
+
+	type findingIDHolder struct {
+		FindingID    string `json:"FindingID"`
+		FindingIDAlt string `json:"finding_id"`
+		ID           string `json:"ID"`
+		IDAlt        string `json:"id"`
+	}
+
+	getID := func(f findingIDHolder) string {
+		if f.FindingID != "" {
+			return f.FindingID
+		}
+		if f.FindingIDAlt != "" {
+			return f.FindingIDAlt
+		}
+		if f.ID != "" {
+			return f.ID
+		}
+		return f.IDAlt
+	}
+
+	if trimmed[0] == '[' {
+		var list []findingIDHolder
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return "", err
+		}
+		if len(list) > 0 {
+			return getID(list[0]), nil
+		}
+		return "", fmt.Errorf("no findings returned by report")
+	} else if trimmed[0] == '{' {
+		var single findingIDHolder
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return "", err
+		}
+		return getID(single), nil
+	}
+
+	return "", fmt.Errorf("invalid report JSON format")
 }
