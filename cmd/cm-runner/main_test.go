@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -356,5 +357,138 @@ func TestRun_Init_CMInitPrefix_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unrecognized subcommand 'cm'") {
 		t.Errorf("expected unrecognized subcommand error on stderr, got:\n%s", stderr.String())
+	}
+}
+
+func TestRun_Fix_Success_Fixed(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		t.Fatalf("failed to make ws dir: %v", err)
+	}
+
+	// Initialize git repo in workspace
+	cmdInit := exec.Command("git", "init")
+	cmdInit.Dir = wsDir
+	_ = cmdInit.Run()
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	storeFile := filepath.Join(wsDir, "store.go")
+	_ = os.WriteFile(storeFile, []byte("package store\nfunc Old() {}\n"), 0644)
+	cmdAdd := exec.Command("git", "add", "store.go")
+	cmdAdd.Dir = wsDir
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = wsDir
+	_ = cmdCommit.Run()
+
+	findingFile := filepath.Join(tmpDir, "finding.json")
+	sampleFinding := `{"FilePath": "store.go", "StartLine": 2, "Title": "SQLi", "Analysis": "fix it"}`
+	if err := os.WriteFile(findingFile, []byte(sampleFinding), 0644); err != nil {
+		t.Fatalf("failed to write finding.json: %v", err)
+	}
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"uuid-fixed-main","Title":"SQLi"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    echo "package store\nfunc New() {}\n" > store.go
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write mock cm script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"fix", findingFile, "--", "-c", "custom-context"}, strings.NewReader(""), &stdout, &stderr, wsDir, mockCM)
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0) for successful fix, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	outStr := stdout.String()
+	if !strings.Contains(outStr, `"status": "FIXED"`) {
+		t.Errorf("expected FIXED in stdout change envelope, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "uuid-fixed-main") {
+		t.Errorf("expected finding ID in stdout change envelope, got: %s", outStr)
+	}
+}
+
+func TestRun_Fix_Unresolved(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+
+	cmdInit := exec.Command("git", "init")
+	cmdInit.Dir = wsDir
+	_ = cmdInit.Run()
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	storeFile := filepath.Join(wsDir, "store.go")
+	_ = os.WriteFile(storeFile, []byte("package store\n"), 0644)
+	cmdAdd := exec.Command("git", "add", "store.go")
+	cmdAdd.Dir = wsDir
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = wsDir
+	_ = cmdCommit.Run()
+
+	findingFile := filepath.Join(tmpDir, "finding.json")
+	sampleFinding := `{"FilePath": "store.go", "Title": "Hard Problem"}`
+	_ = os.WriteFile(findingFile, []byte(sampleFinding), 0644)
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"uuid-unres-main","Title":"Hard Problem"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    exit 0
+fi
+exit 2
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"fix", findingFile}, strings.NewReader(""), &stdout, &stderr, wsDir, mockCM)
+	if code != cmrunner.ExitFindings {
+		t.Fatalf("expected ExitFindings (1) on unresolved fix, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	outStr := stdout.String()
+	if !strings.Contains(outStr, `"status": "UNRESOLVED"`) {
+		t.Errorf("expected UNRESOLVED in stdout change envelope, got: %s", outStr)
+	}
+}
+
+func TestRun_Fix_UsageError_MissingTarget(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"fix"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitUsage {
+		t.Fatalf("expected ExitUsage (2) for fix without args, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "missing target finding argument") {
+		t.Errorf("expected missing target argument error on stderr, got: %s", stderr.String())
+	}
+}
+
+func TestRun_Fix_NonExistentFile(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"fix", "/non/existent/finding.json"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitUsage {
+		t.Fatalf("expected ExitUsage (2) for non-existent finding file, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "finding file not found") {
+		t.Errorf("expected finding file not found on stderr, got: %s", stderr.String())
 	}
 }
