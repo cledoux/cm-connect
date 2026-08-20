@@ -143,10 +143,19 @@ func TestRunner_RunSequence_FindAndReport_WithFindings(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "find progress log" >&2
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[{"FindingID":"vuln1","Title":"SQL Injection"}]'
     echo "report log notice" >&2
     exit 0
@@ -193,9 +202,18 @@ func TestRunner_RunSequence_FindAndReport_CleanCodebase(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[]'
     exit 0
 fi
@@ -267,10 +285,19 @@ func TestRunner_RunSequence_Phase1FailureAbortsPhase2(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "scan engine crashed" >&2
     exit 3
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo "SHOULD_NOT_EXECUTE"
     exit 0
 fi

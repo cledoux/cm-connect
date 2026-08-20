@@ -206,10 +206,19 @@ func TestRun_FindExecution_TwoPhase(t *testing.T) {
 	// Create a mock cm script that handles find and report
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "find progress on stderr" >&2
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[{"FindingID":"vuln1","Title":"SQL Injection"}]'
     echo "report log on stderr" >&2
     exit 0

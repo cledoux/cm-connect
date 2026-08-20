@@ -6,7 +6,7 @@ import (
 )
 
 // FindCommand encapsulates parameters for the 'cm find' vulnerability scan phase.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0004, REQ-0005, REQ-0006
+// Governing: ADR-0001, ADR-0002, ADR-0004, SPEC-cm-batch-runner, REQ-0004, REQ-0005, REQ-0006
 type FindCommand struct {
 	TargetPath string
 	Flags      []string
@@ -30,15 +30,24 @@ func (c *FindCommand) SetArgs(args ...string) ([]string, error) {
 }
 
 // Cmd returns the complete command argument vector for 'cm find'.
-// Automatically injects -y (auto-approve / skip update check) for unattended batch execution.
+// Automatically injects the root flag --sandbox=false (disabling the OS sandbox
+// via exebox / Linux namespaces while leaving the filesystem boundary intact
+// per ADR-0004) before 'find' and -y (auto-approve / skip update check) after
+// the target path for unattended batch execution.
 func (c *FindCommand) Cmd() []string {
 	target := c.TargetPath
 	if strings.TrimSpace(target) == "" {
 		target = "."
 	}
-	args := []string{"find", target}
-	if !isHelpRequested(c.Flags) && !hasYesFlag(c.Flags) {
-		args = append(args, "-y")
+	var args []string
+	if !isHelpRequested(c.Flags) && !hasSandboxFlag(c.Flags) {
+		args = append(args, "--sandbox=false")
+	}
+	args = append(args, "find", target)
+	if !isHelpRequested(c.Flags) {
+		if !hasYesFlag(c.Flags) {
+			args = append(args, "-y")
+		}
 	}
 	args = append(args, c.Flags...)
 	return args
@@ -56,6 +65,15 @@ func isHelpRequested(flags []string) bool {
 func hasYesFlag(flags []string) bool {
 	for _, f := range flags {
 		if f == "-y" || f == "--yes" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSandboxFlag(flags []string) bool {
+	for _, f := range flags {
+		if strings.HasPrefix(f, "--sandbox") {
 			return true
 		}
 	}
