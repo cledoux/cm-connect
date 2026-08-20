@@ -303,6 +303,138 @@ else
     fail "Init subcommand failed. Help exit=${EXIT_HELP}, Mutate exit=${EXIT_MUTATE}. Output: ${OUT_MUTATE}"
 fi
 
+# ------------------------------------------------------------------------------
+# Test 13: Fix with Positional Finding File (REQ-0002, REQ-0003, REQ-0008)
+# ------------------------------------------------------------------------------
+log_test "Scenario 13: Fix with positional finding file"
+set +e
+FINDING_JSON="${TEST_WORKSPACE}/test-finding.json"
+cat << 'EOF' > "${FINDING_JSON}"
+{
+  "FilePath": "src/auth/auth.go",
+  "StartLine": 1,
+  "Title": "Hardcoded Credential",
+  "Analysis": "Remove credential",
+  "Severity": "HIGH",
+  "VulnType": "CWE-798",
+  "Snippet": "package auth"
+}
+EOF
+chmod 666 "${FINDING_JSON}"
+
+OUT=$(run_with_timeout 15 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" fix /workspace/test-finding.json 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 0 ] || [ ${EXIT_CODE} -eq 1 ]; then
+    pass "Fix with positional file executes remediation pipeline (exit ${EXIT_CODE})"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 15s"
+else
+    fail "Fix execution failed with unexpected exit code ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 14: Fix with Stdin Ingestion Channel (REQ-0002, REQ-0008)
+# ------------------------------------------------------------------------------
+log_test "Scenario 14: Fix with stdin ingestion channel (-)"
+set +e
+OUT=$(cat "${FINDING_JSON}" | run_with_timeout 15 docker run -i --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" fix - 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 0 ] || [ ${EXIT_CODE} -eq 1 ]; then
+    pass "Fix with stdin '-' channel executes successfully (exit ${EXIT_CODE})"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 15s"
+else
+    fail "Fix with stdin failed with unexpected exit code ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 15: Fix with Missing Target Argument Error (REQ-0002)
+# ------------------------------------------------------------------------------
+log_test "Scenario 15: Error on fix without target argument"
+set +e
+OUT=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" fix 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"missing target finding argument"* ]]; then
+    pass "Fix without target argument exits with code 2 and usage error"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 10s"
+else
+    fail "Expected exit code 2 on missing fix target, got ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 16: Fix with Non-Existent Finding File (REQ-0002)
+# ------------------------------------------------------------------------------
+log_test "Scenario 16: Error on non-existent finding file"
+set +e
+OUT=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" fix /workspace/non_existent.json 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"finding file not found"* ]]; then
+    pass "Fix with non-existent file exits with code 2 and file not found error"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 10s"
+else
+    fail "Expected exit code 2 on non-existent file, got ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 17: Strict Subcommand Dispatch for Fix (Reject cm fix) (REQ-0001)
+# ------------------------------------------------------------------------------
+log_test "Scenario 17: Strict subcommand dispatch (reject cm fix prefix)"
+set +e
+OUT=$(run_with_timeout 10 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" cm fix /workspace/test-finding.json 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 2 ] && [[ "${OUT}" == *"unrecognized subcommand 'cm'"* ]]; then
+    pass "Invocation with 'cm fix' is rejected with exit code 2 and unrecognized subcommand error"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 10s"
+else
+    fail "Expected exit code 2 for 'cm fix', got ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 18: Fix Help Flag (REQ-0002)
+# ------------------------------------------------------------------------------
+log_test "Scenario 18: Fix subcommand help flag"
+set +e
+OUT=$(run_with_timeout 10 docker run --rm "${IMAGE_NAME}" fix --help 2>&1)
+EXIT_CODE=$?
+set -e
+
+if [ ${EXIT_CODE} -eq 0 ] && [[ "${OUT}" == *"cm-runner fix"* ]]; then
+    pass "Executing 'fix --help' exits with code 0 and displays usage guide"
+elif [ ${EXIT_CODE} -eq 124 ]; then
+    fail "Test timed out after 10s"
+else
+    fail "Expected exit 0 for 'fix --help', got ${EXIT_CODE}. Output: ${OUT}"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 19: Host Immutability (REQ-0007, ADR-0003)
+# ------------------------------------------------------------------------------
+log_test "Scenario 19: Host workspace immutability validation"
+set +e
+INITIAL_CHECKSUM=$(sha256sum "${TEST_WORKSPACE}/src/auth/auth.go" | awk '{print $1}')
+run_with_timeout 15 docker run --rm -v "${TEST_WORKSPACE}:/workspace" "${IMAGE_NAME}" fix /workspace/test-finding.json >/dev/null 2>&1 || true
+FINAL_CHECKSUM=$(sha256sum "${TEST_WORKSPACE}/src/auth/auth.go" | awk '{print $1}')
+set -e
+
+if [ "${INITIAL_CHECKSUM}" = "${FINAL_CHECKSUM}" ]; then
+    pass "Host workspace files remained 100% byte-for-byte identical after fix execution"
+else
+    fail "Host workspace was modified! Initial=${INITIAL_CHECKSUM}, Final=${FINAL_CHECKSUM}"
+fi
+
 echo "======================================================================"
 echo -e "Integration Test Suite Results: ${GREEN}${PASSED_TESTS} Passed${NC}, ${RED}${FAILED_TESTS} Failed${NC}"
 echo "======================================================================"
@@ -311,3 +443,4 @@ if [ ${FAILED_TESTS} -ne 0 ]; then
     exit 1
 fi
 exit 0
+

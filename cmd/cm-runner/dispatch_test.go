@@ -538,4 +538,5 @@ func TestParseArgs_Fix(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for 'cm fix', got nil")
 		}
+	})
 }

@@ -113,7 +113,6 @@ func ImportFinding(rawJSON []byte, workspaceRoot string) ([]byte, *FindingImport
 	return outBytes, importItem, nil
 }
 
-
 func resolveWorkspacePath(rawPath string, workspaceRoot string) (string, error) {
 	if rawPath == "" {
 		return "", fmt.Errorf("missing or empty file path in finding")
