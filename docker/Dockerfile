@@ -6,8 +6,8 @@ COPY pkg/ /app/pkg/
 COPY cmd/ /app/cmd/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /app/bin/cm-runner ./cmd/cm-runner
 
-# Stage 2: Runtime image (Debian Bookworm Slim)
-FROM debian:bookworm-slim
+# Stage 2: Runtime image (Debian Latest Stable)
+FROM debian:stable-slim
 
 # TODO(#19): Validate or resolve container user UID/GID mapping in CI/CD pipeline vs workstation.
 # Pre-built registry images have static UIDs, whereas workstation mode requires dynamic host UIDs.
