@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0002.md
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
+  - adrs/ADR-0006.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Specification (`cm-pr-workflow`)
