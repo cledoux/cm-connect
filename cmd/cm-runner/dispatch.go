@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +22,17 @@ const (
 	ActionInit
 	ActionShell
 	ActionRunSequence
+	ActionFix
 )
 
 // DispatchPlan encapsulates the routing decision and associated execution parameters.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner
+// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner
 type DispatchPlan struct {
-	Action    ActionType
-	Commands  []cmrunner.Command
-	TargetDir string
+	Action           ActionType
+	Commands         []cmrunner.Command
+	TargetDir        string
+	RawFinding       []byte
+	PassthroughFlags []string
 }
 
 var (
@@ -154,10 +159,15 @@ func parseInitArgs(args []string) (DispatchPlan, error) {
 
 // parseArgs parses raw CLI arguments into a DispatchPlan.
 // Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
-func parseArgs(workspaceRoot string, rawArgs []string) (DispatchPlan, error) {
+// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
+func parseArgs(workspaceRoot string, rawArgs []string, stdin ...io.Reader) (DispatchPlan, error) {
 	if len(rawArgs) == 0 {
 		return DispatchPlan{}, errMissingSubcommand
+	}
+
+	var in io.Reader
+	if len(stdin) > 0 {
+		in = stdin[0]
 	}
 
 	subcommand := rawArgs[0]
@@ -168,7 +178,67 @@ func parseArgs(workspaceRoot string, rawArgs []string) (DispatchPlan, error) {
 		return parseFindArgs(workspaceRoot, rawArgs[1:])
 	case "init":
 		return parseInitArgs(rawArgs[1:])
+	case "fix":
+		return parseFixArgs(workspaceRoot, rawArgs[1:], in)
 	default:
 		return DispatchPlan{}, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
+}
+
+func parseFixArgs(workspaceRoot string, args []string, stdin io.Reader) (DispatchPlan, error) {
+	beforeDash, afterDash := partitionDash(args)
+
+	if isHelpRequested(beforeDash) || isHelpRequested(afterDash) {
+		return DispatchPlan{Action: ActionHelp}, nil
+	}
+
+	if len(beforeDash) == 0 || strings.TrimSpace(beforeDash[0]) == "" {
+		return DispatchPlan{}, fmt.Errorf("missing target finding argument: specify a finding JSON file path or '-' for stdin")
+	}
+
+	target := strings.TrimSpace(beforeDash[0])
+	var raw []byte
+
+	if target == "-" {
+		if stdin == nil {
+			return DispatchPlan{}, fmt.Errorf("stdin is nil: cannot read finding payload")
+		}
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return DispatchPlan{}, fmt.Errorf("failed to read finding from stdin: %w", err)
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			return DispatchPlan{}, fmt.Errorf("empty finding payload received from stdin")
+		}
+		raw = data
+	} else {
+		targetFile := target
+		if !filepath.IsAbs(targetFile) && workspaceRoot != "" {
+			if _, err := os.Stat(targetFile); err != nil {
+				wsTarget := filepath.Join(workspaceRoot, targetFile)
+				if _, wsErr := os.Stat(wsTarget); wsErr == nil {
+					targetFile = wsTarget
+				}
+			}
+		}
+
+		if _, err := os.Stat(targetFile); err != nil {
+			return DispatchPlan{}, fmt.Errorf("finding file not found: %s (%w)", target, err)
+		}
+
+		data, err := os.ReadFile(targetFile)
+		if err != nil {
+			return DispatchPlan{}, fmt.Errorf("failed to read finding file: %s (%w)", target, err)
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			return DispatchPlan{}, fmt.Errorf("empty finding file: %s", target)
+		}
+		raw = data
+	}
+
+	return DispatchPlan{
+		Action:           ActionFix,
+		RawFinding:       raw,
+		PassthroughFlags: afterDash,
+	}, nil
 }

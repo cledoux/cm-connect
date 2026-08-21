@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"cm-connect/pkg/cmrunner"
@@ -431,7 +432,7 @@ func TestParseFindArgs_CmdIncludesYes(t *testing.T) {
 		t.Fatalf("failed to create temp dirs: %v", err)
 	}
 
-	plan, err := parseArgs(tmpDir, []string{"find", "src/auth"})
+	plan, err := parseArgs(tmpDir, []string{"find", "src/auth"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -446,4 +447,96 @@ func TestParseFindArgs_CmdIncludesYes(t *testing.T) {
 	if !reflect.DeepEqual(findCmd.Cmd(), expected) {
 		t.Errorf("expected Cmd() %v, got %v", expected, findCmd.Cmd())
 	}
+}
+
+func TestParseArgs_Fix(t *testing.T) {
+	tmpDir := t.TempDir()
+	findingFile := filepath.Join(tmpDir, "finding.json")
+	sampleJSON := `{"FilePath": "main.go", "Title": "XSS"}`
+	if err := os.WriteFile(findingFile, []byte(sampleJSON), 0644); err != nil {
+		t.Fatalf("failed to write test finding file: %v", err)
+	}
+
+	t.Run("valid file path target", func(t *testing.T) {
+		plan, err := parseArgs(tmpDir, []string{"fix", findingFile}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.Action != ActionFix {
+			t.Errorf("expected ActionFix, got %v", plan.Action)
+		}
+		if string(plan.RawFinding) != sampleJSON {
+			t.Errorf("expected raw finding %q, got %q", sampleJSON, string(plan.RawFinding))
+		}
+		if len(plan.PassthroughFlags) != 0 {
+			t.Errorf("expected 0 passthrough flags, got %v", plan.PassthroughFlags)
+		}
+	})
+
+	t.Run("stdin target with data", func(t *testing.T) {
+		stdinReader := strings.NewReader(sampleJSON)
+		plan, err := parseArgs(tmpDir, []string{"fix", "-"}, stdinReader)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.Action != ActionFix {
+			t.Errorf("expected ActionFix, got %v", plan.Action)
+		}
+		if string(plan.RawFinding) != sampleJSON {
+			t.Errorf("expected raw finding from stdin %q, got %q", sampleJSON, string(plan.RawFinding))
+		}
+	})
+
+	t.Run("stdin target with empty stream returns error", func(t *testing.T) {
+		stdinReader := strings.NewReader("   ")
+		_, err := parseArgs(tmpDir, []string{"fix", "-"}, stdinReader)
+		if err == nil {
+			t.Error("expected error on empty stdin, got nil")
+		}
+	})
+
+	t.Run("missing target argument returns error", func(t *testing.T) {
+		_, err := parseArgs(tmpDir, []string{"fix"}, nil)
+		if err == nil {
+			t.Error("expected error on missing fix target argument, got nil")
+		}
+	})
+
+	t.Run("non-existent file target returns error", func(t *testing.T) {
+		_, err := parseArgs(tmpDir, []string{"fix", "nonexistent.json"}, nil)
+		if err == nil {
+			t.Error("expected error on non-existent file path, got nil")
+		}
+	})
+
+	t.Run("double dash forwards passthrough flags verbatim", func(t *testing.T) {
+		plan, err := parseArgs(tmpDir, []string{"fix", findingFile, "--", "-c", "Sanitize input", "--architecture=3-1"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.Action != ActionFix {
+			t.Errorf("expected ActionFix, got %v", plan.Action)
+		}
+		expectedFlags := []string{"-c", "Sanitize input", "--architecture=3-1"}
+		if !reflect.DeepEqual(plan.PassthroughFlags, expectedFlags) {
+			t.Errorf("expected passthrough flags %v, got %v", expectedFlags, plan.PassthroughFlags)
+		}
+	})
+
+	t.Run("help flag returns ActionHelp", func(t *testing.T) {
+		plan, err := parseArgs(tmpDir, []string{"fix", "--help"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.Action != ActionHelp {
+			t.Errorf("expected ActionHelp, got %v", plan.Action)
+		}
+	})
+
+	t.Run("redundant cm fix prefix returns error", func(t *testing.T) {
+		_, err := parseArgs(tmpDir, []string{"cm", "fix", findingFile}, nil)
+		if err == nil {
+			t.Error("expected error for 'cm fix', got nil")
+		}
+	})
 }

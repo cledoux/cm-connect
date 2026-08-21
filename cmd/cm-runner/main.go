@@ -36,29 +36,31 @@ func printUsage(w io.Writer) {
 	usage := `CodeMender Runner (cm-runner) - Headless Container Entrypoint
 
 Usage:
-  cm-runner find [path] [-- [flags]]     Run CodeMender vulnerability scan on full repo or sub-path
-  cm-runner shell [path]                 Launch interactive /bin/bash shell in /workspace (requires -it)
-  cm-runner init                         Pre-seed and apply headless configuration defaults in-place
+  cm-runner find [path] [-- [flags]]          Run CodeMender vulnerability scan on full repo or sub-path
+  cm-runner fix <finding.json | -> [-- [flags]] Remediate finding and emit JSON change envelope to stdout
+  cm-runner shell [path]                      Launch interactive /bin/bash shell in /workspace (requires -it)
+  cm-runner init                              Pre-seed and apply headless configuration defaults in-place
 
 Arguments:
   [path]               For find/shell: Scans repository at /workspace (default: '.') or scoped sub-path.
+  <finding.json | ->   For fix: Path to finding JSON artifact, or '-' to read from standard input.
   [-- [flags...]]      Optional flags forwarded directly to CodeMender CLI.
-                       Emits structured JSON findings on stdout.
+                       Emits structured JSON change envelope on stdout.
                        Diagnostics and progress logs are routed to stderr.
 
 Exit Codes:
-  0    Scan completed successfully with 0 findings, or init/help completed
-  1    Scan completed with findings detected
-  2    CLI usage error, missing subcommand, invalid target path, or missing TTY on shell
+  0    Remediation succeeded / patch generated, clean scan, or init/help completed
+  1    Remediation unresolved / no patch generated, or findings detected
+  2    CLI usage error, invalid target, malformed finding JSON, or missing TTY on shell
   >2   Fatal tooling, execution, or authentication error
 `
 	fmt.Fprint(w, usage)
 }
 
 // run parses arguments and orchestrates execution of the target subcommand.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009
+// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009, REQ-0010
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
-	plan, err := parseArgs(workspaceDir, args)
+	plan, err := parseArgs(workspaceDir, args, stdin)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		printUsage(stderr)
@@ -113,6 +115,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 
 		ctx := context.Background()
 		code, _ := runner.RunSequence(ctx, plan.Commands, stdin, stdout, stderr)
+		return code
+
+	case ActionFix:
+		runner := cmrunner.NewRunner(
+			cmrunner.WithExecutable(cmPath),
+			cmrunner.WithWorkspace(workspaceDir),
+		)
+
+		ctx := context.Background()
+		code, _ := runner.RunFixPipeline(ctx, plan.RawFinding, plan.PassthroughFlags, stdout, stderr)
 		return code
 
 	default:
