@@ -108,6 +108,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		runner := cmrunner.NewRunner(
 			cmrunner.WithExecutable(cmPath),
 			cmrunner.WithWorkspace(workspaceDir),
+			cmrunner.WithGlobalFlags("--sandbox=false"),
 		)
 
 		ctx := context.Background()

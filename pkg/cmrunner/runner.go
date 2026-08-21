@@ -61,11 +61,19 @@ func WithEnv(env []string) Option {
 	}
 }
 
+// WithGlobalFlags sets root/global CLI flags (e.g. --sandbox=false) prepended to all command executions.
+func WithGlobalFlags(flags ...string) Option {
+	return func(r *Runner) {
+		r.GlobalFlags = flags
+	}
+}
+
 // Runner is responsible for executing CodeMender commands in isolated process groups.
 type Runner struct {
-	Executable string
-	Workspace  string
-	Env        []string
+	Executable  string
+	Workspace   string
+	Env         []string
+	GlobalFlags []string
 }
 
 // NewRunner instantiates a Runner with sensible defaults and functional options.
@@ -170,7 +178,11 @@ func (r *Runner) execSubprocess(
 		return ExitUsage, fmt.Errorf("empty command arguments")
 	}
 
-	execCmd := exec.CommandContext(ctx, r.Executable, args...)
+	var finalArgs []string
+	finalArgs = append(finalArgs, r.GlobalFlags...)
+	finalArgs = append(finalArgs, args...)
+
+	execCmd := exec.CommandContext(ctx, r.Executable, finalArgs...)
 	execCmd.Dir = r.Workspace
 	execCmd.Env = r.Env
 	execCmd.Stdin = stdin

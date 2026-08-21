@@ -424,7 +424,7 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
-func TestParseFindArgs_CmdIncludesSandboxAndYes(t *testing.T) {
+func TestParseFindArgs_CmdIncludesYes(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "src", "auth")
 	if err := os.MkdirAll(authDir, 0755); err != nil {
@@ -442,7 +442,7 @@ func TestParseFindArgs_CmdIncludesSandboxAndYes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected plan.Commands[0] to be *cmrunner.FindCommand, got %T", plan.Commands[0])
 	}
-	expected := []string{"--sandbox=false", "find", "src/auth", "-y"}
+	expected := []string{"find", "src/auth", "-y"}
 	if !reflect.DeepEqual(findCmd.Cmd(), expected) {
 		t.Errorf("expected Cmd() %v, got %v", expected, findCmd.Cmd())
 	}

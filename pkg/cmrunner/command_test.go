@@ -14,63 +14,42 @@ func TestNewFindCommand(t *testing.T) {
 		expectedPath string
 	}{
 		{
-			name:         "defaults to dot and injects --sandbox=false and -y when empty",
+			name:         "defaults to dot and injects -y when empty",
 			target:       "",
 			flags:        nil,
-			expectedCmd:  []string{"--sandbox=false", "find", ".", "-y"},
+			expectedCmd:  []string{"find", ".", "-y"},
 			expectedPath: ".",
 		},
 		{
-			name:         "preserves target path and does not duplicate -y flag or --sandbox flag",
+			name:         "preserves target path and does not duplicate -y flag",
 			target:       "src/auth",
-			flags:        []string{"-y", "--sandbox=false"},
-			expectedCmd:  []string{"find", "src/auth", "-y", "--sandbox=false"},
+			flags:        []string{"-y"},
+			expectedCmd:  []string{"find", "src/auth", "-y"},
 			expectedPath: "src/auth",
 		},
 		{
-			name:         "injects --sandbox=false and -y when custom scan flags provided without them",
+			name:         "preserves target path and does not duplicate --yes flag",
+			target:       "src/auth",
+			flags:        []string{"--yes"},
+			expectedCmd:  []string{"find", "src/auth", "--yes"},
+			expectedPath: "src/auth",
+		},
+		{
+			name:         "injects -y when custom scan flags provided without it",
 			target:       "src/auth",
 			flags:        []string{"-c", "5"},
-			expectedCmd:  []string{"--sandbox=false", "find", "src/auth", "-y", "-c", "5"},
+			expectedCmd:  []string{"find", "src/auth", "-y", "-c", "5"},
 			expectedPath: "src/auth",
 		},
 		{
-			name:         "injects -y when --sandbox=false is already provided",
-			target:       "src/auth",
-			flags:        []string{"--sandbox=false", "-c", "5"},
-			expectedCmd:  []string{"find", "src/auth", "-y", "--sandbox=false", "-c", "5"},
-			expectedPath: "src/auth",
-		},
-		{
-			name:         "injects -y when --sandbox=true is already provided",
-			target:       "src/auth",
-			flags:        []string{"--sandbox=true", "-c", "5"},
-			expectedCmd:  []string{"find", "src/auth", "-y", "--sandbox=true", "-c", "5"},
-			expectedPath: "src/auth",
-		},
-		{
-			name:         "injects --sandbox=false when -y is already provided",
-			target:       "src/auth",
-			flags:        []string{"-y", "-c", "5"},
-			expectedCmd:  []string{"--sandbox=false", "find", "src/auth", "-y", "-c", "5"},
-			expectedPath: "src/auth",
-		},
-		{
-			name:         "injects --sandbox=false when --yes is already provided",
-			target:       "src/auth",
-			flags:        []string{"--yes", "-c", "5"},
-			expectedCmd:  []string{"--sandbox=false", "find", "src/auth", "--yes", "-c", "5"},
-			expectedPath: "src/auth",
-		},
-		{
-			name:         "does not inject --sandbox=false or -y when help flag is requested",
+			name:         "does not inject -y when help flag is requested",
 			target:       "src/auth",
 			flags:        []string{"--help"},
 			expectedCmd:  []string{"find", "src/auth", "--help"},
 			expectedPath: "src/auth",
 		},
 		{
-			name:         "does not inject --sandbox=false or -y when short help flag -h is requested",
+			name:         "does not inject -y when short help flag -h is requested",
 			target:       "src/auth",
 			flags:        []string{"-h"},
 			expectedCmd:  []string{"find", "src/auth", "-h"},
@@ -102,7 +81,7 @@ func TestNewFindCommand(t *testing.T) {
 
 func TestFindCommand_EmptyTargetPath_DefaultsToDot(t *testing.T) {
 	cmd := &FindCommand{TargetPath: ""}
-	expected := []string{"--sandbox=false", "find", ".", "-y"}
+	expected := []string{"find", ".", "-y"}
 	if !reflect.DeepEqual(cmd.Cmd(), expected) {
 		t.Errorf("expected %v, got %v", expected, cmd.Cmd())
 	}
