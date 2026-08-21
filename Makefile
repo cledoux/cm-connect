@@ -42,8 +42,8 @@ rebuild: clean lint ## Clean and rebuild the CodeMender batch runner Docker imag
 		-t $(IMAGE_NAME):$(TAG) \
 		-f docker/Dockerfile .
 
-integration-test: ## Run full container verification test suite with timeout
-	timeout 60s ./tests/integration_test.sh
+integration-test: ## Run full container verification test suite in Go with timeout
+	go test -tags=integration -v -timeout=3m ./tests/integration/...
 
 clean: ## Remove Docker image and clean local artifacts
 	docker rmi -f $(IMAGE_NAME):$(TAG) || true
