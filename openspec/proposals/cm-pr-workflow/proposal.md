@@ -1,7 +1,7 @@
 # Proposal: CodeMender GitHub Actions CI/CD PR Review Workflow
 
 **Change ID:** `cm-pr-workflow` \
-**Status:** In Review \
+**Status:** Accepted \
 **Author:** Charles LeDoux \
 **Target Spec:** `openspec/specs/workflow/cm-pr-workflow/spec.md` \
 **Governing ADR:** `adrs/ADR-0005.md`
