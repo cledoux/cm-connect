@@ -63,8 +63,8 @@ flowchart TD
         StepSummary["Emit to $GITHUB_STEP_SUMMARY"]
 
         Fixed --> DiffCheck
-        DiffCheck -->|Yes (In-Diff)| PostInline
-        DiffCheck -->|No (Out-of-Diff)| PostFallback
+        DiffCheck -->|In-Diff| PostInline
+        DiffCheck -->|Out-of-Diff| PostFallback
         PostInline & PostFallback --> StepSummary
     end
 
