@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -206,10 +207,19 @@ func TestRun_FindExecution_TwoPhase(t *testing.T) {
 	// Create a mock cm script that handles find and report
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "find progress on stderr" >&2
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[{"FindingID":"vuln1","Title":"SQL Injection"}]'
     echo "report log on stderr" >&2
     exit 0
@@ -232,6 +242,60 @@ exit 2
 	}
 	if !strings.Contains(stderr.String(), "find progress on stderr") {
 		t.Errorf("expected find progress on stderr, got %q", stderr.String())
+	}
+}
+
+func TestRun_FindExecution_GlobalFlagsForwarded(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src", "auth")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("failed to make test dir: %v", err)
+	}
+
+	argsLog := filepath.Join(tmpDir, "args.log")
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
+    exit 0
+elif [ "$cmd" = "report" ]; then
+    echo '[]'
+    exit 0
+fi
+exit 2
+`, argsLog)
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find", "src/auth"}, strings.NewReader(""), &stdout, &stderr, tmpDir, mockCM)
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0), got %d (stderr: %q)", code, stderr.String())
+	}
+
+	logBytes, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("failed to read args log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 invocations, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "--sandbox=false find src/auth -y" {
+		t.Errorf("expected find invocation '--sandbox=false find src/auth -y', got %q", lines[0])
+	}
+	if lines[1] != "--sandbox=false report --format=json" {
+		t.Errorf("expected report invocation '--sandbox=false report --format=json', got %q", lines[1])
 	}
 }
 

@@ -15,6 +15,7 @@ func TestNewRunner_DefaultsAndOptions(t *testing.T) {
 		WithExecutable("/custom/cm"),
 		WithWorkspace("/custom/workspace"),
 		WithEnv([]string{"TEST_ENV=1"}),
+		WithGlobalFlags("--sandbox=false"),
 	)
 
 	if r.Executable != "/custom/cm" {
@@ -25,6 +26,9 @@ func TestNewRunner_DefaultsAndOptions(t *testing.T) {
 	}
 	if len(r.Env) != 1 || r.Env[0] != "TEST_ENV=1" {
 		t.Errorf("expected custom env, got %v", r.Env)
+	}
+	if len(r.GlobalFlags) != 1 || r.GlobalFlags[0] != "--sandbox=false" {
+		t.Errorf("expected custom global flags, got %v", r.GlobalFlags)
 	}
 }
 
@@ -93,6 +97,40 @@ exit 0
 	}
 }
 
+func TestRunner_WithGlobalFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+echo "args: $@"
+exit 0
+`
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create mock script: %v", err)
+	}
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(tmpDir),
+		WithGlobalFlags("--sandbox=false"),
+	)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+	cmd := NewFindCommand("src/auth")
+
+	code, err := runner.Run(ctx, cmd, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != ExitClean {
+		t.Errorf("expected ExitClean (0), got %d", code)
+	}
+	expectedOutput := "args: --sandbox=false find src/auth -y\n"
+	if stdout.String() != expectedOutput {
+		t.Errorf("expected stdout %q, got %q", expectedOutput, stdout.String())
+	}
+}
+
 func TestRunner_Run_EmptyArgs(t *testing.T) {
 	runner := NewRunner()
 	ctx := context.Background()
@@ -143,10 +181,19 @@ func TestRunner_RunSequence_FindAndReport_WithFindings(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "find progress log" >&2
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[{"FindingID":"vuln1","Title":"SQL Injection"}]'
     echo "report log notice" >&2
     exit 0
@@ -193,9 +240,18 @@ func TestRunner_RunSequence_FindAndReport_CleanCodebase(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     exit 0
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo '[]'
     exit 0
 fi
@@ -236,7 +292,16 @@ func TestRunner_RunSequence_NilStdoutOnReport(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "report" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "report" ]; then
     echo '[{"FindingID":"vuln1"}]'
     exit 0
 fi
@@ -267,10 +332,19 @@ func TestRunner_RunSequence_Phase1FailureAbortsPhase2(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
 	scriptContent := `#!/bin/sh
-if [ "$1" = "find" ]; then
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
     echo "scan engine crashed" >&2
     exit 3
-elif [ "$1" = "report" ]; then
+elif [ "$cmd" = "report" ]; then
     echo "SHOULD_NOT_EXECUTE"
     exit 0
 fi

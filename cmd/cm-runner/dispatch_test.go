@@ -423,3 +423,27 @@ func TestParseArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFindArgs_CmdIncludesYes(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "src", "auth")
+	if err := os.MkdirAll(authDir, 0755); err != nil {
+		t.Fatalf("failed to create temp dirs: %v", err)
+	}
+
+	plan, err := parseArgs(tmpDir, []string{"find", "src/auth"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.Commands) < 1 {
+		t.Fatalf("expected at least 1 command, got %d", len(plan.Commands))
+	}
+	findCmd, ok := plan.Commands[0].(*cmrunner.FindCommand)
+	if !ok {
+		t.Fatalf("expected plan.Commands[0] to be *cmrunner.FindCommand, got %T", plan.Commands[0])
+	}
+	expected := []string{"find", "src/auth", "-y"}
+	if !reflect.DeepEqual(findCmd.Cmd(), expected) {
+		t.Errorf("expected Cmd() %v, got %v", expected, findCmd.Cmd())
+	}
+}

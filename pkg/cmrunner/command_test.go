@@ -23,15 +23,22 @@ func TestNewFindCommand(t *testing.T) {
 		{
 			name:         "preserves target path and does not duplicate -y flag",
 			target:       "src/auth",
-			flags:        []string{"-y", "--unrestricted"},
-			expectedCmd:  []string{"find", "src/auth", "-y", "--unrestricted"},
+			flags:        []string{"-y"},
+			expectedCmd:  []string{"find", "src/auth", "-y"},
 			expectedPath: "src/auth",
 		},
 		{
-			name:         "injects -y when custom scan flags provided without -y",
+			name:         "preserves target path and does not duplicate --yes flag",
 			target:       "src/auth",
-			flags:        []string{"-c", "5", "--unrestricted"},
-			expectedCmd:  []string{"find", "src/auth", "-y", "-c", "5", "--unrestricted"},
+			flags:        []string{"--yes"},
+			expectedCmd:  []string{"find", "src/auth", "--yes"},
+			expectedPath: "src/auth",
+		},
+		{
+			name:         "injects -y when custom scan flags provided without it",
+			target:       "src/auth",
+			flags:        []string{"-c", "5"},
+			expectedCmd:  []string{"find", "src/auth", "-y", "-c", "5"},
 			expectedPath: "src/auth",
 		},
 		{
@@ -39,6 +46,13 @@ func TestNewFindCommand(t *testing.T) {
 			target:       "src/auth",
 			flags:        []string{"--help"},
 			expectedCmd:  []string{"find", "src/auth", "--help"},
+			expectedPath: "src/auth",
+		},
+		{
+			name:         "does not inject -y when short help flag -h is requested",
+			target:       "src/auth",
+			flags:        []string{"-h"},
+			expectedCmd:  []string{"find", "src/auth", "-h"},
 			expectedPath: "src/auth",
 		},
 	}

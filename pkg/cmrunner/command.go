@@ -30,15 +30,18 @@ func (c *FindCommand) SetArgs(args ...string) ([]string, error) {
 }
 
 // Cmd returns the complete command argument vector for 'cm find'.
-// Automatically injects -y (auto-approve / skip update check) for unattended batch execution.
+// Automatically injects -y (auto-approve / skip update check) after the target path
+// for unattended batch execution unless --help or -h is requested or -y/--yes is already provided.
 func (c *FindCommand) Cmd() []string {
 	target := c.TargetPath
 	if strings.TrimSpace(target) == "" {
 		target = "."
 	}
 	args := []string{"find", target}
-	if !isHelpRequested(c.Flags) && !hasYesFlag(c.Flags) {
-		args = append(args, "-y")
+	if !isHelpRequested(c.Flags) {
+		if !hasYesFlag(c.Flags) {
+			args = append(args, "-y")
+		}
 	}
 	args = append(args, c.Flags...)
 	return args
