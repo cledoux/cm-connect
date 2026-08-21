@@ -56,18 +56,8 @@ func runFilterFindingsJQ(t *testing.T, diffPath string, findingsPath string, ext
 	return items
 }
 
-// TestWorkflow_FilterFindings executes the entire suite of filter_findings test scenarios.
-func TestWorkflow_FilterFindings(t *testing.T) {
-	t.Run("InDiff", TestWorkflowFilterInDiff)
-	t.Run("OutOfDiff", TestWorkflowFilterOutOfDiff)
-	t.Run("Mixed", TestWorkflowFilterMixed)
-	t.Run("MaxThrottling", TestWorkflowFilterMaxThrottling)
-	t.Run("EmptyFindings", TestWorkflowFilterEmptyFindings)
-	t.Run("EmptyDiff", TestWorkflowFilterEmptyDiff)
-}
-
 // Scenario 1: Verify findings wholly inside commit.diff hunks are preserved in matrix (REQ-0004)
-func TestWorkflowFilterInDiff(t *testing.T) {
+func TestWorkflow_FilterInDiff(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	diffPath := filepath.Join(dir, "commit.diff")
 	findingsPath := filepath.Join(dir, "findings_in_diff.json")
@@ -110,7 +100,7 @@ func TestWorkflowFilterInDiff(t *testing.T) {
 }
 
 // Scenario 2: Discard out-of-diff findings (REQ-0004)
-func TestWorkflowFilterOutOfDiff(t *testing.T) {
+func TestWorkflow_FilterOutOfDiff(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	diffPath := filepath.Join(dir, "commit.diff")
 	findingsPath := filepath.Join(dir, "findings_out_of_diff.json")
@@ -123,7 +113,7 @@ func TestWorkflowFilterOutOfDiff(t *testing.T) {
 }
 
 // Scenario 3: Mixed findings are filtered and sorted by severity (REQ-0004)
-func TestWorkflowFilterMixed(t *testing.T) {
+func TestWorkflow_FilterMixed(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	diffPath := filepath.Join(dir, "commit.diff")
 	findingsPath := filepath.Join(dir, "findings_mixed.json")
@@ -155,7 +145,7 @@ func TestWorkflowFilterMixed(t *testing.T) {
 }
 
 // Scenario 4: Max findings threshold truncates output (REQ-0004)
-func TestWorkflowFilterMaxThrottling(t *testing.T) {
+func TestWorkflow_FilterMaxThrottling(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	diffPath := filepath.Join(dir, "commit.diff")
 	findingsPath := filepath.Join(dir, "findings_mixed.json")
@@ -175,7 +165,7 @@ func TestWorkflowFilterMaxThrottling(t *testing.T) {
 }
 
 // Scenario 5: Empty findings list returns empty matrix (REQ-0004)
-func TestWorkflowFilterEmptyFindings(t *testing.T) {
+func TestWorkflow_FilterEmptyFindings(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	diffPath := filepath.Join(dir, "commit.diff")
 
@@ -192,7 +182,7 @@ func TestWorkflowFilterEmptyFindings(t *testing.T) {
 }
 
 // Scenario 6: Empty diff discards all findings (REQ-0001, REQ-0004)
-func TestWorkflowFilterEmptyDiff(t *testing.T) {
+func TestWorkflow_FilterEmptyDiff(t *testing.T) {
 	dir := getWorkflowFixturesDir(t)
 	findingsPath := filepath.Join(dir, "findings_in_diff.json")
 
