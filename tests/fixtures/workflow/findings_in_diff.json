@@ -1,0 +1,34 @@
+[
+  {
+    "FindingID": "478a8868-b05a-5258-99ac-aa9e932374a7",
+    "SessionID": "ChAyYWI5YWYzYjg0MTc0YzgwEAgaATAqBG1haW4",
+    "Title": "SQL Injection in User Lookup",
+    "FilePath": "pkg/auth/store.go",
+    "Severity": "HIGH",
+    "Confidence": 100,
+    "Analysis": "Replace raw string concatenation with parameterized SQL placeholder.",
+    "Snippet": "query := fmt.Sprintf(\"SELECT id, name, role FROM users WHERE id = '%s'\", id)",
+    "VulnType": "SQL_INJECTION",
+    "VulnID": "CWE-89",
+    "Fingerprint": "fp-sql-auth-store-42",
+    "Status": "OPEN",
+    "StartLine": 42,
+    "EndLine": 42
+  },
+  {
+    "FindingID": "890b1234-c05a-5258-99ac-bb9e932374b8",
+    "SessionID": "ChAyYWI5YWYzYjg0MTc0YzgwEAgaATAqBG1haW4",
+    "Title": "Hardcoded API Credential",
+    "FilePath": "cmd/server/main.go",
+    "Severity": "CRITICAL",
+    "Confidence": 100,
+    "Analysis": "Avoid hardcoding API credentials directly in source code; read from environment variable.",
+    "Snippet": "apiKey := \"AIzaSyFakeKeyForTesting12345\"",
+    "VulnType": "HARDCODED_CREDENTIALS",
+    "VulnID": "CWE-798",
+    "Fingerprint": "fp-hardcoded-api-key-81",
+    "Status": "OPEN",
+    "StartLine": 81,
+    "EndLine": 82
+  }
+]

@@ -1,0 +1,22 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 1111111..2222222 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -80,6 +80,8 @@ func startServer() {
+ 	log.Println("Starting server...")
++	apiKey := "AIzaSyFakeKeyForTesting12345"
++	setupAuth(apiKey)
+ 	http.ListenAndServe(":8080", nil)
+ }
+diff --git a/pkg/auth/store.go b/pkg/auth/store.go
+index 3333333..4444444 100644
+--- a/pkg/auth/store.go
++++ b/pkg/auth/store.go
+@@ -40,7 +40,7 @@ func GetUser(ctx context.Context, db *sql.DB, id string) (*User, error) {
+-	query := fmt.Sprintf("SELECT * FROM users WHERE id = '%s'", id)
+-	row := db.QueryRow(query)
++	query := fmt.Sprintf("SELECT id, name, role FROM users WHERE id = '%s'", id)
++	row := db.QueryRowContext(ctx, query)
+ 	var u User
+ 	if err := row.Scan(&u.ID, &u.Name, &u.Role); err != nil {
+ 		return nil, err

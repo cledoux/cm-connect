@@ -1,0 +1,10 @@
+{
+  "finding_id": "890b1234-c05a-5258-99ac-bb9e932374b8",
+  "status": "UNRESOLVED",
+  "vuln_type": "CWE-798",
+  "title": "Hardcoded API Key",
+  "summary": "Remediation failed: automated agent could not resolve secret loading without breaking dependent callers.",
+  "files_modified": [],
+  "patch": "",
+  "hunks": []
+}
