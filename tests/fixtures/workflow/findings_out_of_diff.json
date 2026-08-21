@@ -1,0 +1,34 @@
+[
+  {
+    "FindingID": "123a4567-c05a-5258-99ac-bb9e932374c9",
+    "SessionID": "ChAyYWI5YWYzYjg0MTc0YzgwEAgaATAqBG1haW4",
+    "Title": "Hardcoded Database Password",
+    "FilePath": "legacy/db.go",
+    "Severity": "HIGH",
+    "Confidence": 100,
+    "Analysis": "Hardcoded database password found in untouched legacy database helper file.",
+    "Snippet": "const dbPass = \"secret123\"",
+    "VulnType": "HARDCODED_CREDENTIALS",
+    "VulnID": "CWE-798",
+    "Fingerprint": "fp-hardcoded-db-pass-120",
+    "Status": "OPEN",
+    "StartLine": 120,
+    "EndLine": 120
+  },
+  {
+    "FindingID": "567b8901-d05a-5258-99ac-cc9e932374d0",
+    "SessionID": "ChAyYWI5YWYzYjg0MTc0YzgwEAgaATAqBG1haW4",
+    "Title": "Information Exposure Through Verbose Error Message",
+    "FilePath": "pkg/auth/store.go",
+    "Severity": "LOW",
+    "Confidence": 80,
+    "Analysis": "Error message exposes internal database schema details in untouched section of auth store.",
+    "Snippet": "return nil, fmt.Errorf(\"internal database query failure: %w\", err)",
+    "VulnType": "INFORMATION_EXPOSURE",
+    "VulnID": "CWE-200",
+    "Fingerprint": "fp-verbose-error-150",
+    "Status": "OPEN",
+    "StartLine": 150,
+    "EndLine": 155
+  }
+]
