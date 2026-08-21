@@ -240,18 +240,23 @@ ______________________________________________________________________
 
 ## 6. PR Review Comment Synthesizer & Diff-Boundary Fallback Protocol
 
+The PR review comment publisher is implemented as a standalone, zero-dependency
+Python 3 standard library script (`github-actions/scripts/publish_comments.py`)
+executed on the host runner VM. It interacts directly with the GitHub REST API
+via `urllib.request` using `$GITHUB_TOKEN` and `$GITHUB_API_URL`.
+
 ### 1. In-Diff Inline Review Comment (Primary Path):
 
 When `hunk.start_line` and `hunk.end_line` fall within `commit.diff` hunks, the
-publisher invokes `github.rest.pulls.createReviewComment`:
+publisher invokes `POST /repos/{owner}/{repo}/pulls/{number}/comments`:
 
-- `pull_number`: PR Number
-- `commit_id`: PR Head SHA (`context.payload.pull_request.head.sha`)
+- `pull_number`: PR Number (from `$PR_NUMBER` or `$GITHUB_REF`)
+- `commit_id`: PR Head SHA (from `$COMMIT_SHA` or payload)
 - `path`: `hunk.file_path`
-- `start_line`: `hunk.start_line < hunk.end_line ? hunk.start_line : undefined`
+- `start_line`: `hunk.start_line` if multi-line (`hunk.start_line < hunk.end_line`), omitted if single-line
 - `line`: `hunk.end_line`
 - `side`: `"RIGHT"`
-- `start_side`: `hunk.start_line < hunk.end_line ? "RIGHT" : undefined`
+- `start_side`: `"RIGHT"` if multi-line, omitted if single-line
 - `body`:
   ````markdown
   ### 🛡️ CodeMender Auto-Fix Suggestion: SQL Injection in User Lookup
@@ -268,8 +273,8 @@ publisher invokes `github.rest.pulls.createReviewComment`:
 ### 2. Out-of-Diff Fallback Path (HTTP 422 Mitigation):
 
 If the GitHub API rejects the comment with HTTP 422 (line outside PR diff), the
-step catches the error and creates an issue comment via
-`github.rest.issues.createComment`:
+script catches `urllib.error.HTTPError` where `err.code == 422` and creates an
+issue comment via `POST /repos/{owner}/{repo}/issues/{number}/comments`:
 
 - `issue_number`: PR Number
 - `body`:
@@ -285,6 +290,11 @@ step catches the error and creates an issue comment via
   ```
   ````
 
+### 3. Step Summary Generation:
+
+For all processed findings (both `FIXED` and `UNRESOLVED`), the script formats a
+markdown status card and appends it to `$GITHUB_STEP_SUMMARY`.
+
 ______________________________________________________________________
 
 ## 7. File Layout & Delivery Architecture
@@ -297,7 +307,9 @@ cm-connect/
 │   ├── README.md               # Quickstart guide & installation instructions
 │   ├── scripts/
 │   │   ├── install.sh          # One-command installer copying workflow to target repo
-│   │   └── setup-wif.sh        # GCP IAM & Workload Identity Federation configuration script
+│   │   ├── setup-wif.sh        # GCP IAM & Workload Identity Federation configuration script
+│   │   ├── filter_findings.jq  # Standalone jq filter for dynamic fix matrix generation
+│   │   └── publish_comments.py # Zero-dependency Python 3 PR review comment & fallback publisher
 │   └── workflows/
 │       └── codemender.yml      # Standalone GitHub Actions workflow template
 ├── openspec/
