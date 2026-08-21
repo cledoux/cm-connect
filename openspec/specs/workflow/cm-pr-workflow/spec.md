@@ -25,15 +25,19 @@ operationalizing [ADR-0001](../../../../adrs/ADR-0001.md) (Batch Scanner) and
 In automated development workflows, pull requests require fast, accurate
 security feedback without developer fatigue caused by un-scoped codebase scans
 or pre-existing legacy issues. The `cm-pr-workflow` capability establishes a
-production-grade pipeline that:
+production-grade pipeline tailored to the GitHub Actions runner environment
+that:
 
-1. **Scopes Analysis to Pull Request Diffs:** Analyzes only the files and line
-   ranges modified by the pull request, eliminating scan noise and remediation
-   overhead on untouched legacy files.
-1. **Authenticates Keylessly via Google Cloud WIF:** Leverages GitHub OIDC and
-   Workload Identity Federation (`google-github-actions/auth@v2`) to generate
-   ephemeral Application Default Credentials (ADC) without long-lived service
-   account keys.
+1. **Captures Pull Request Diffs Directly (`commit.diff`):** Emits the complete
+   pull request diff using
+   `git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff`,
+   scoping vulnerability discovery and patch remediation strictly to modified
+   lines without complex interval-parsing scripts.
+1. **Authenticates Keylessly via Google Cloud WIF:** Leverages GitHub Actions
+   native OIDC token injection (`id-token: write`) and Workload Identity
+   Federation (`google-github-actions/auth@v2`) to generate ephemeral
+   Application Default Credentials (ADC) without long-lived service account
+   keys.
 1. **Traps Scanner Exit Codes:** Treats `cm-runner find` exit code `1` (findings
    detected) as an expected branch rather than a job abort, cleanly
    transitioning to parallel remediation.
@@ -48,49 +52,56 @@ production-grade pipeline that:
    the pull request diff, routing out-of-diff findings to PR issue comments or
    `$GITHUB_STEP_SUMMARY` to prevent GitHub API `422 Unprocessable Entity`
    rejections.
-1. **Isolates Example Deliverables:** Maintains the workflow template strictly
-   under `examples/workflows/codemender.yml` and `examples/workflows/README.md`,
-   ensuring zero unintentional workflow execution on `cm-connect`.
+1. **Organizes Dedicated GitHub Actions Assets:** Packages the workflow
+   template, setup guide, WIF configuration script, and automated installer
+   script strictly under `github-actions/`
+   (`github-actions/workflows/codemender.yml`,
+   `github-actions/scripts/install.sh`, `github-actions/scripts/setup-wif.sh`,
+   and `github-actions/README.md`), ensuring zero unintentional workflow
+   execution on `cm-connect`.
 
 ## Requirements
 
-### REQ-0001: Trigger and Diff-Scoped Workspace Discovery
+### REQ-0001: Trigger and Diff-Scoped Workspace Discovery via `commit.diff`
 
 The workflow MUST trigger on pull request events (`pull_request` types:
 `[opened, synchronize, reopened]`) targeting the repository's default branch
 (`main`).
 
 The workflow MUST check out the repository with full git history
-(`fetch-depth: 0`) and identify the set of modified files and line ranges
-introduced by the pull request using `git diff --name-only origin/main...HEAD`.
+(`fetch-depth: 0`) and extract the complete pull request diff directly to
+`commit.diff` in the workspace root using:
+`git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff`
 
-#### Scenario: Discover modified files in pull request
+The scanner and filtering steps MUST consume `commit.diff` to identify modified
+files and restrict finding analysis strictly to lines changed by the pull
+request.
 
-- **GIVEN** a pull request targeting `main` containing modifications to
+#### Scenario: Extract pull request diff to commit.diff
+
+- **GIVEN** a pull request targeting `main` with modified files
   `pkg/auth/store.go` and `cmd/server/main.go`
-- **WHEN** the `scan` job executes
-- **THEN** the workflow MUST extract the modified file list
-  `["pkg/auth/store.go", "cmd/server/main.go"]` and record the diff boundaries
-  for downstream filtering.
+- **WHEN** the `scan` job executes the diff extraction step
+- **THEN** the workflow MUST execute
+  `git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff`
+  and verify `commit.diff` is populated.
 
-#### Scenario: Short-circuit on non-scannable pull request diff
+#### Scenario: Short-circuit on empty diff
 
-- **GIVEN** a pull request modifying only non-code documentation files (e.g.
-  `README.md`)
-- **WHEN** the diff extraction step executes
-- **THEN** the workflow MUST complete the scan step with zero findings and
-  record `has_findings=false`.
+- **GIVEN** a pull request with an empty diff or zero scannable source changes
+- **WHEN** `commit.diff` is evaluated
+- **THEN** the workflow MUST complete the scan step with zero findings, set
+  `has_findings=false`, and skip downstream remediation jobs.
 
 ______________________________________________________________________
 
 ### REQ-0002: Keyless Google Cloud Workload Identity Federation (WIF) Authentication
 
-The workflow jobs (`scan` and `fix`) MUST use keyless authentication to Google
-Cloud Vertex AI via Workload Identity Federation
-(`google-github-actions/auth@v2`).
+The workflow jobs (`scan` and `fix`) MUST authenticate keylessly to Google Cloud
+Vertex AI via Workload Identity Federation (`google-github-actions/auth@v2`).
 
 The workflow MUST require the `id-token: write` permission to request a GitHub
-OIDC token and exchange it with GCP Security Token Service (STS) for a temporary
+OIDC JWT and exchange it with GCP Security Token Service (STS) for a temporary
 Application Default Credentials (ADC) file.
 
 The workflow MUST pass the temporary ADC credential file into Docker container
@@ -100,18 +111,18 @@ invocations via a read-only volume mount:
 
 #### Scenario: Authenticate runner via WIF
 
-- **GIVEN** valid repository secrets `GCP_WIF_PROVIDER` and
+- **GIVEN** configured repository secrets `GCP_WIF_PROVIDER` and
   `GCP_SERVICE_ACCOUNT`
 - **WHEN** the `auth` step executes in the `scan` or `fix` job
 - **THEN** `google-github-actions/auth` MUST generate a short-lived credentials
-  file at `$GOOGLE_APPLICATION_CREDENTIALS` and provide it to the container.
+  file at `$GOOGLE_APPLICATION_CREDENTIALS` and mount it to the container.
 
-#### Scenario: Reject execution when WIF secrets are missing
+#### Scenario: Fail fast when WIF secrets are unconfigured
 
 - **GIVEN** missing or empty `GCP_WIF_PROVIDER` secret
 - **WHEN** the `auth` step executes
-- **THEN** the step MUST fail with a descriptive diagnostic message instructing
-  the user to configure repository secrets.
+- **THEN** the step MUST fail with a descriptive diagnostic error guiding the
+  repository maintainer to configure GitHub secrets.
 
 ______________________________________________________________________
 
@@ -158,8 +169,8 @@ When `has_findings=true`, the `scan` job MUST parse
 `.codemender-out/findings.json` using `jq` and construct a dynamic matrix JSON
 array:
 
-1. **Diff Filtering:** The generator MUST discard findings whose `FilePath` and
-   `StartLine` do not intersect the pull request diff.
+1. **Diff Filtering:** The generator MUST filter findings against `commit.diff`
+   and discard findings that do not touch modified files or lines in the diff.
 1. **Finding Prioritization:** If remaining findings exceed a configurable
    maximum threshold $M$ (default: `10`), findings MUST be sorted by `Severity`
    (`CRITICAL` > `HIGH` > `MEDIUM` > `LOW`) and truncated to the top $M$ items.
@@ -174,7 +185,7 @@ array:
 
 #### Scenario: Generate dynamic matrix from diff findings
 
-- **GIVEN** a scan output with 2 findings touching modified PR files
+- **GIVEN** a scan output with 2 findings touching lines in `commit.diff`
 - **WHEN** the matrix generation step executes
 - **THEN** `outputs.findings_matrix` MUST contain a 2-element JSON array
   formatted for GitHub Actions `strategy: matrix`.
@@ -235,9 +246,8 @@ hunk into an inline review suggestion comment:
 
    ```suggestion
    <Hunk.Replacement>
+   ```
    ````
-   ```
-   ```
 1. **API Coordinates:**
    - `path`: `hunk.file_path`
    - `side`: `"RIGHT"`
@@ -288,20 +298,39 @@ request's diff hunk):
 
 ______________________________________________________________________
 
-### REQ-0008: Standalone Template Isolation and Repository Protection
+### REQ-0008: Dedicated `github-actions/` Directory and Automated Installer
 
-The example workflow and setup documentation MUST reside strictly under:
+All GitHub Actions assets MUST be packaged under a dedicated `github-actions/`
+directory:
 
-- `examples/workflows/codemender.yml`
-- `examples/workflows/README.md`
+- `github-actions/workflows/codemender.yml`: The complete standalone workflow
+  template.
+- `github-actions/scripts/install.sh`: An executable installation script that
+  copies the workflow template and configuration files to a target repository
+  with a single command.
+- `github-actions/scripts/setup-wif.sh`: An executable helper script that runs
+  `gcloud` commands to provision GCP Workload Identity Pool, Provider, Service
+  Account, and IAM bindings.
+- `github-actions/README.md`: Quickstart onboarding and configuration
+  documentation.
 
 The repository MUST NOT create or enable active workflows in
 `.github/workflows/` on `cm-connect` to prevent automated CI execution on this
 repository during development.
 
-#### Scenario: Verify template location
+#### Scenario: Install workflow to target repository via installer script
+
+- **GIVEN** a target repository at `/path/to/my-repo`
+- **WHEN** the user executes
+  `./github-actions/scripts/install.sh /path/to/my-repo`
+- **THEN** the script MUST copy `github-actions/workflows/codemender.yml` to
+  `/path/to/my-repo/.github/workflows/codemender.yml` and display next-step
+  secret configuration instructions.
+
+#### Scenario: Verify template isolation in cm-connect
 
 - **GIVEN** the `cm-connect` codebase
 - **WHEN** reviewing root directory paths
-- **THEN** the workflow file MUST exist at `examples/workflows/codemender.yml`
-  and `.github/workflows/codemender.yml` MUST NOT exist.
+- **THEN** the workflow file MUST exist at
+  `github-actions/workflows/codemender.yml` and
+  `.github/workflows/codemender.yml` MUST NOT exist.

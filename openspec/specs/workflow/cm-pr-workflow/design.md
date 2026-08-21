@@ -27,9 +27,16 @@ Implementing
 [ADR-0005](../../../../adrs/ADR-0005.md) (Stateless Fix Runner Protocol), this
 capability focuses on:
 
-1. **Diff-Scoped Scanning:** Restricts vulnerability analysis strictly to the
-   pull request diff (`git diff --name-only origin/main...HEAD`), eliminating
-   developer review fatigue from legacy repository issues.
+1. **Direct Pull Request Diff Ingestion (`commit.diff`):** Dumps the exact pull
+   request diff using
+   `git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff`,
+   scoping vulnerability analysis strictly to incoming changes and eliminating
+   complex interval-parsing awk logic.
+1. **GitHub Actions Native Runtime Context:** Leverages runner environment
+   features (`$GITHUB_WORKSPACE`, `ACTIONS_ID_TOKEN_REQUEST_URL`,
+   `${{ github.event.pull_request.base.sha }}`,
+   `${{ github.event.pull_request.head.sha }}`) to operate cleanly without
+   ad-hoc branch guessing or manual remote fetching.
 1. **Keyless GCP WIF Authentication:** Exchanges GitHub Actions OIDC tokens for
    short-lived Google Cloud Application Default Credentials (ADC), securing
    Vertex AI model access without persistent service account keys.
@@ -41,16 +48,20 @@ capability focuses on:
    (`POST /pulls/{id}/reviews`) with 1-click apply markdown
    ```` ```suggestion ```` blocks.
 1. **Diff-Boundary Fallback Handling:** Intersects finding coordinates against
-   the PR diff, routing out-of-diff findings to PR issue comments or
+   `commit.diff`, routing out-of-diff findings to PR issue comments or
    `$GITHUB_STEP_SUMMARY` to prevent GitHub API `422 Unprocessable Entity`
    errors.
-1. **Isolated Example Delivery:** Packages all deliverables under
-   `examples/workflows/codemender.yml` and `examples/workflows/README.md` to
-   prevent accidental activation on `cm-connect`.
+1. **Dedicated `github-actions/` Structure & Automated Installer:** Packages all
+   deliverables under `github-actions/`
+   (`github-actions/workflows/codemender.yml`,
+   `github-actions/scripts/install.sh`, `github-actions/scripts/setup-wif.sh`,
+   and `github-actions/README.md`) with a 1-command installer script for target
+   repos.
 
 ### Goals
 
 - Provide a drop-in, production-ready GitHub Actions workflow template.
+- Capture PR diffs cleanly via `commit.diff` without complex parsing scripts.
 - Eliminate scan and fix noise by scoping operations strictly to PR diffs.
 - Enable massive parallelization of remediation jobs via dynamic GitHub Actions
   matrices.
@@ -58,6 +69,8 @@ capability focuses on:
 - Post 1-click apply inline code suggestions directly in GitHub PR review
   threads.
 - Prevent GitHub API 422 errors through intelligent diff-boundary fallbacks.
+- Provide an automated installer script (`install.sh`) to copy workflow assets
+  to target repositories with zero manual configuration errors.
 - Maintain all workflow files outside `.github/` in `cm-connect`.
 
 ### Non-Goals
@@ -82,13 +95,13 @@ flowchart TD
     subgraph ScanJob["2. Scan Job (runs-on: ubuntu-latest)"]
         direction TB
         Checkout["actions/checkout@v4<br>(fetch-depth: 0)"]
-        DiffExtract["Extract PR Diff & Modified Files<br>git diff --name-only origin/main...HEAD"]
+        DiffExtract["Dump Pull Request Diff<br>git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff"]
         WIFScan["GCP WIF Authentication<br>google-github-actions/auth@v2"]
         DockerFind["docker run cm-runner find .<br>(stdout -> findings.json)"]
         ExitTrap{"Trap Exit Code"}
         CleanExit["Exit 0: Clean<br>outputs.has_findings = false"]
         FindingsExit["Exit 1: Findings Detected<br>outputs.has_findings = true"]
-        MatrixGen["jq Dynamic Matrix Generator<br>Filter by diff & sort by severity<br>outputs.findings_matrix = [...]"]
+        MatrixGen["jq Dynamic Matrix Generator<br>Filter by commit.diff & sort by severity<br>outputs.findings_matrix = [...]"]
 
         Checkout --> DiffExtract --> WIFScan --> DockerFind --> ExitTrap
         ExitTrap -->|Code 0| CleanExit
@@ -111,7 +124,7 @@ flowchart TD
 
     subgraph ReviewBot["4. PR Review Suggestion Publisher"]
         direction TB
-        DiffCheck{"Is hunk line range inside<br>PR diff hunks?"}
+        DiffCheck{"Is hunk line range inside<br>commit.diff hunks?"}
         PostInline["POST /repos/{owner}/{repo}/pulls/{id}/reviews<br>Inline ```suggestion``` block"]
         PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level PR Comment with ```diff```"]
         StepSummary["Emit to $GITHUB_STEP_SUMMARY"]
@@ -128,7 +141,35 @@ flowchart TD
 
 ______________________________________________________________________
 
-## 3. Google Cloud Workload Identity Federation (WIF) Security & Token Flow
+## 3. GitHub Actions Runtime Environment Considerations
+
+When executing inside GitHub Actions:
+
+1. **Checked-out Ref Context:**
+   - GitHub Actions provides the exact base and head commit SHAs in the event
+     payload:
+     - Base commit: `${{ github.event.pull_request.base.sha }}`
+     - Head commit: `${{ github.event.pull_request.head.sha }}`
+   - By running
+     `git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff`,
+     the workflow extracts the precise diff without requiring ad-hoc remote
+     fetching or branch tracking assumptions.
+1. **Container Filesystem & UID/GID Permissions:**
+   - On GitHub-hosted runners (`ubuntu-latest`), Docker runs with access to
+     `$GITHUB_WORKSPACE`.
+   - The `cm-connect` container (`cm-runner`) executes as non-root user
+     `codemender` (UID 1000, GID 1000) matching default workspace write
+     permissions.
+1. **Keyless OIDC & Secrets:**
+   - The runner provides environment variables `ACTIONS_ID_TOKEN_REQUEST_URL`
+     and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` when `permissions: id-token: write` is
+     granted.
+   - `google-github-actions/auth@v2` automatically utilizes these variables to
+     perform the STS token exchange.
+
+______________________________________________________________________
+
+## 4. Google Cloud Workload Identity Federation (WIF) Security & Token Flow
 
 ```mermaid
 sequenceDiagram
@@ -160,28 +201,13 @@ sequenceDiagram
 
 ______________________________________________________________________
 
-## 4. Diff Extraction & Dynamic Matrix Partitioning Protocol
+## 5. Diff Ingestion & Dynamic Matrix Partitioning Protocol
 
-### Diff Inspection Algorithm:
+### Diff Ingestion via `commit.diff`:
 
 ```bash
-# 1. Fetch complete base ref
-git fetch origin main --depth=1
-
-# 2. Extract changed file list
-CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
-
-# 3. Extract modified line intervals per file
-git diff -U0 origin/main...HEAD | awk '
-  /^--- \/dev\/null/ { next }
-  /^\+\+\+ b\// { file=substr($0, 7); next }
-  /^@@/ {
-    split($3, a, ",");
-    start=substr(a[1], 2);
-    count=(length(a) > 1 ? a[2] : 1);
-    print file ":" start ":" (start + count - 1);
-  }
-' > /tmp/pr-diff-ranges.txt
+# Extract complete pull request diff to workspace artifact
+git diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > commit.diff
 ```
 
 ### Dynamic Matrix Schema:
@@ -211,12 +237,12 @@ The `scan` job constructs a JSON array emitted to `outputs.findings_matrix`:
 
 ______________________________________________________________________
 
-## 5. PR Review Comment Synthesizer & Diff-Boundary Fallback Protocol
+## 6. PR Review Comment Synthesizer & Diff-Boundary Fallback Protocol
 
 ### 1. In-Diff Inline Review Comment (Primary Path):
 
-When `hunk.start_line` and `hunk.end_line` fall within the PR's modified diff
-hunks, the publisher invokes `github.rest.pulls.createReviewComment`:
+When `hunk.start_line` and `hunk.end_line` fall within `commit.diff` hunks, the
+publisher invokes `github.rest.pulls.createReviewComment`:
 
 - `pull_number`: PR Number
 - `commit_id`: PR Head SHA (`context.payload.pull_request.head.sha`)
@@ -260,16 +286,19 @@ step catches the error and creates an issue comment via
 
 ______________________________________________________________________
 
-## 6. File Layout & Delivery Architecture
+## 7. File Layout & Delivery Architecture
 
-All deliverables are placed in the `examples/workflows/` directory:
+All GitHub Actions assets are organized under `github-actions/`:
 
 ```
 cm-connect/
-├── examples/
+├── github-actions/
+│   ├── README.md               # Quickstart guide & installation instructions
+│   ├── scripts/
+│   │   ├── install.sh          # One-command installer copying workflow to target repo
+│   │   └── setup-wif.sh        # GCP IAM & Workload Identity Federation configuration script
 │   └── workflows/
-│       ├── codemender.yml      # Standalone GitHub Actions workflow template
-│       └── README.md           # Turnkey repo onboarding & GCP IAM setup guide
+│       └── codemender.yml      # Standalone GitHub Actions workflow template
 ├── openspec/
 │   ├── proposals/
 │   │   └── cm-pr-workflow/
@@ -279,4 +308,26 @@ cm-connect/
 │           └── cm-pr-workflow/
 │               ├── spec.md     # Normative capability specification
 │               └── design.md   # Architectural design and protocol specification
+```
+
+### Automated Installer Script (`install.sh`):
+
+```bash
+#!/usr/bin/env bash
+# Usage: ./github-actions/scripts/install.sh /path/to/target/repo
+set -euo pipefail
+
+TARGET_REPO="${1:-}"
+if [ -z "${TARGET_REPO}" ] || [ ! -d "${TARGET_REPO}" ]; then
+  echo "Usage: $0 <path-to-target-repo>" >&2
+  exit 1
+fi
+
+mkdir -p "${TARGET_REPO}/.github/workflows"
+cp github-actions/workflows/codemender.yml "${TARGET_REPO}/.github/workflows/codemender.yml"
+
+echo "✓ Successfully installed CodeMender workflow to ${TARGET_REPO}/.github/workflows/codemender.yml"
+echo "Next steps:"
+echo "1. Run ./github-actions/scripts/setup-wif.sh to configure Google Cloud IAM & WIF"
+echo "2. Add GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT secrets to your GitHub repository"
 ```
