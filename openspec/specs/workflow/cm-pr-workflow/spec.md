@@ -10,6 +10,7 @@ governing_adrs:
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
   - adrs/ADR-0006.md
+  - adrs/ADR-0007.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Specification (`cm-pr-workflow`)
@@ -129,31 +130,43 @@ ______________________________________________________________________
 
 ### REQ-0003: Headless Batch Scanner Execution and Exit Code Trapping
 
-The `scan` job MUST execute `cm-runner find` against the target workspace and
-trap the exit code:
+The `scan` job MUST execute `cm-runner find-diff` targeting the pull request
+base and head commit SHAs
+(`find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"`)
+and trap the exit code:
 
-1. **Exit Code 0 (Clean):** Scanner found zero vulnerabilities. The step MUST
-   emit `has_findings=false` and terminate successfully.
+1. **Exit Code 0 (Clean / Empty Diff):** Scanner found zero vulnerabilities or
+   the pull request diff was empty (0 bytes). The step MUST emit
+   `has_findings=false` and terminate successfully without dispatching
+   downstream remediation matrix jobs.
 1. **Exit Code 1 (Findings Detected):** Scanner detected one or more
-   vulnerabilities. The step MUST NOT fail the job, but MUST capture the JSON
-   output from `stdout` to `.codemender-out/findings.json` and set
-   `has_findings=true`.
-1. **Exit Code > 1 (Error):** Scanner encountered a fatal CLI or runtime error.
-   The step MUST fail immediately and propagate the non-zero exit code.
+   vulnerabilities in modified lines. The step MUST NOT fail the job, but MUST
+   capture the JSON output from `stdout` to `.codemender-out/findings.json` and
+   set `has_findings=true`.
+1. **Exit Code > 1 (Error):** Scanner encountered a fatal CLI, git, or runtime
+   error. The step MUST fail immediately and propagate the non-zero exit code.
 
 #### Scenario: Clean scan with zero vulnerabilities
 
-- **GIVEN** a workspace containing no security vulnerabilities
-- **WHEN** `cm-runner find` terminates with exit code `0`
+- **GIVEN** a pull request with code changes containing no security
+  vulnerabilities
+- **WHEN** `cm-runner find-diff base.sha head.sha` terminates with exit code `0`
 - **THEN** the scan step MUST set output `has_findings=false` and complete
   without scheduling downstream fix jobs.
 
 #### Scenario: Trap exit code 1 on detected vulnerabilities
 
-- **GIVEN** a workspace containing vulnerabilities in modified PR files
-- **WHEN** `cm-runner find` terminates with exit code `1`
+- **GIVEN** a pull request with vulnerabilities in modified PR files
+- **WHEN** `cm-runner find-diff base.sha head.sha` terminates with exit code `1`
 - **THEN** the workflow MUST capture the findings JSON payload, set
   `has_findings=true`, and proceed to dynamic matrix generation.
+
+#### Scenario: Fast-path clean exit on empty diff
+
+- **GIVEN** a pull request with zero modified source lines
+- **WHEN** `cm-runner find-diff base.sha head.sha` runs
+- **THEN** `cm-runner` MUST immediately emit `[]` on `stdout` and exit with code
+  `0`.
 
 #### Scenario: Propagate fatal scanner error
 
@@ -355,8 +368,8 @@ step summary generation, and CLI execution interfaces.
 - **GIVEN** a `ChangeEnvelope` JSON fixture with a single-line hunk
   (`change_envelope_single_line.json` with `start_line: 42, end_line: 42`)
 - **WHEN** `publish_comments.py` processes the envelope
-- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments` with
-  `path: "pkg/auth/store.go"`, `line: 42`, `side: "RIGHT"`, omitting
+- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments`
+  with `path: "pkg/auth/store.go"`, `line: 42`, `side: "RIGHT"`, omitting
   `start_line` and `start_side`, with a ```` ```suggestion ```` markdown body
   containing the single-line replacement.
 
@@ -365,15 +378,15 @@ step summary generation, and CLI execution interfaces.
 - **GIVEN** a `ChangeEnvelope` JSON fixture with a multi-line hunk
   (`change_envelope_multiline.json` with `start_line: 42, end_line: 43`)
 - **WHEN** `publish_comments.py` processes the envelope
-- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments` with
-  `path: "pkg/auth/store.go"`, `start_line: 42`, `line: 43`,
-  `start_side: "RIGHT"`, `side: "RIGHT"`, with a ```` ```suggestion ```` markdown
-  body containing the multi-line replacement.
+- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments`
+  with `path: "pkg/auth/store.go"`, `start_line: 42`, `line: 43`,
+  `start_side: "RIGHT"`, `side: "RIGHT"`, with a ```` ```suggestion ````
+  markdown body containing the multi-line replacement.
 
 #### Scenario: Handle HTTP 422 error and fall back to top-level issue comment
 
-- **GIVEN** a `ChangeEnvelope` where review comment creation rejects with
-  HTTP 422 Unprocessable Entity (out of PR diff hunk)
+- **GIVEN** a `ChangeEnvelope` where review comment creation rejects with HTTP
+  422 Unprocessable Entity (out of PR diff hunk)
 - **WHEN** `publish_comments.py` catches the HTTP 422 error
 - **THEN** it MUST NOT fail the step and MUST invoke
   `POST /repos/{owner}/{repo}/issues/{number}/comments` with
@@ -385,13 +398,13 @@ step summary generation, and CLI execution interfaces.
 - **GIVEN** a `ChangeEnvelope` JSON fixture with `status: "UNRESOLVED"` and
   empty hunks (`change_envelope_unresolved.json`)
 - **WHEN** `publish_comments.py` processes the unresolved envelope
-- **THEN** it MUST NOT invoke review or issue comment APIs, and MUST log diagnostic
-  information and write the unresolved status to the step summary.
+- **THEN** it MUST NOT invoke review or issue comment APIs, and MUST log
+  diagnostic information and write the unresolved status to the step summary.
 
 #### Scenario: Generate GitHub Actions step summary
 
-- **GIVEN** an execution of `publish_comments.py` with `$GITHUB_STEP_SUMMARY` set
-  to a summary file path
+- **GIVEN** an execution of `publish_comments.py` with `$GITHUB_STEP_SUMMARY`
+  set to a summary file path
 - **WHEN** `publish_comments.py` finishes processing the change envelope
 - **THEN** `$GITHUB_STEP_SUMMARY` MUST contain a markdown summary table or card
   detailing the finding status, severity, title, and modified files.
@@ -399,7 +412,8 @@ step summary generation, and CLI execution interfaces.
 #### Scenario: Execute via CLI with zero external dependencies
 
 - **GIVEN** `publish_comments.py`
-- **WHEN** invoked via Python 3 standard library CLI (`python3 publish_comments.py <envelope.json>`)
-- **THEN** it MUST parse the change envelope and publish review comments, issue comments,
-  and step summaries without requiring third-party pip packages or Node.js runtimes.
-
+- **WHEN** invoked via Python 3 standard library CLI
+  (`python3 publish_comments.py <envelope.json>`)
+- **THEN** it MUST parse the change envelope and publish review comments, issue
+  comments, and step summaries without requiring third-party pip packages or
+  Node.js runtimes.

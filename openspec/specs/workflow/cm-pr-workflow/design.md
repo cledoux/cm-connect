@@ -11,6 +11,7 @@ governing_adrs:
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
   - adrs/ADR-0006.md
+  - adrs/ADR-0007.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Design (`cm-pr-workflow`)
@@ -96,15 +97,14 @@ flowchart TD
     subgraph ScanJob["2. Scan Job (runs-on: ubuntu-latest)"]
         direction TB
         Checkout["actions/checkout@v4<br>(fetch-depth: 0)"]
-        DiffExtract["Dump Pull Request Diff<br>git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff"]
         WIFScan["GCP WIF Authentication<br>google-github-actions/auth@v2"]
-        DockerFind["docker run cm-runner find .<br>(stdout -> findings.json)"]
+        DockerFindDiff["docker run cm-runner find-diff base.sha head.sha<br>(stdout -> findings.json)"]
         ExitTrap{"Trap Exit Code"}
-        CleanExit["Exit 0: Clean<br>outputs.has_findings = false"]
+        CleanExit["Exit 0: Clean / Empty Diff<br>outputs.has_findings = false"]
         FindingsExit["Exit 1: Findings Detected<br>outputs.has_findings = true"]
-        MatrixGen["jq Dynamic Matrix Generator<br>Filter by commit.diff & sort by severity<br>outputs.findings_matrix = [...]"]
+        MatrixGen["jq Dynamic Matrix Generator<br>outputs.findings_matrix = [...]"]
 
-        Checkout --> DiffExtract --> WIFScan --> DockerFind --> ExitTrap
+        Checkout --> WIFScan --> DockerFindDiff --> ExitTrap
         ExitTrap -->|Code 0| CleanExit
         ExitTrap -->|Code 1| FindingsExit --> MatrixGen
     end
@@ -253,7 +253,8 @@ publisher invokes `POST /repos/{owner}/{repo}/pulls/{number}/comments`:
 - `pull_number`: PR Number (from `$PR_NUMBER` or `$GITHUB_REF`)
 - `commit_id`: PR Head SHA (from `$COMMIT_SHA` or payload)
 - `path`: `hunk.file_path`
-- `start_line`: `hunk.start_line` if multi-line (`hunk.start_line < hunk.end_line`), omitted if single-line
+- `start_line`: `hunk.start_line` if multi-line
+  (`hunk.start_line < hunk.end_line`), omitted if single-line
 - `line`: `hunk.end_line`
 - `side`: `"RIGHT"`
 - `start_side`: `"RIGHT"` if multi-line, omitted if single-line

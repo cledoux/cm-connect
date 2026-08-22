@@ -8,3 +8,4 @@
 | [ADR-0004](ADR-0004.md) | Container Execution Mode and Sandbox Isolation Trade-offs                   | Proposed | 2026-08-19 |
 | [ADR-0005](ADR-0005.md) | Stateless Finding Ingestion and Patch Generation Container Protocol (fix)   | Proposed | 2026-08-20 |
 | [ADR-0006](ADR-0006.md) | Diff-Scoped Finding Filtering and Dynamic Matrix Generation Strategy (jq)   | Proposed | 2026-08-21 |
+| [ADR-0007](ADR-0007.md) | Native Diff-Aware Vulnerability Scanning Container Protocol (find-diff)     | Proposed | 2026-08-22 |
