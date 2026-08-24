@@ -619,4 +619,3 @@ func TestAppendScanExtension(t *testing.T) {
 		}
 	})
 }
-
