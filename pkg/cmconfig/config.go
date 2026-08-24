@@ -262,4 +262,3 @@ func EnsureDiffExtension(path ...string) error {
 	}
 	return AppendScanExtension(targetPath, ".diff")
 }
-
