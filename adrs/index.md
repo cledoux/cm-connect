@@ -9,3 +9,4 @@
 | [ADR-0005](ADR-0005.md) | Stateless Finding Ingestion and Patch Generation Container Protocol (fix)   | Accepted | 2026-08-20 |
 | [ADR-0006](ADR-0006.md) | Diff-Scoped Finding Filtering and Dynamic Matrix Generation Strategy (jq)   | Accepted | 2026-08-21 |
 | [ADR-0007](ADR-0007.md) | Native Diff-Aware Vulnerability Scanning Container Protocol (find-diff)     | Accepted | 2026-08-22 |
+| [ADR-0008](ADR-0008.md) | Native Git CLI Execution (os/exec) vs. Go Git Libraries (go-git, git2go)    | Proposed | 2026-08-24 |

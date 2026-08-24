@@ -8,6 +8,7 @@ governing_adrs:
   - adrs/ADR-0001.md
   - adrs/ADR-0002.md
   - adrs/ADR-0007.md
+  - adrs/ADR-0008.md
 ---
 
 # CodeMender Headless Batch Scanner Container Design (`find`)
