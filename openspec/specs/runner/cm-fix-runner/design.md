@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0002.md
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
+  - adrs/ADR-0008.md
 ---
 
 # CodeMender Stateless Fix Runner Container Design (`fix`)
