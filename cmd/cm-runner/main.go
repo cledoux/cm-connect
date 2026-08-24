@@ -15,7 +15,6 @@ import (
 	"cm-connect/pkg/cmrunner"
 )
 
-
 // isTerminal returns true if the given reader is an interactive character device terminal (TTY).
 // Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0009
 func isTerminal(r io.Reader) bool {
@@ -97,7 +96,7 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 
 	scratchPath := cmrunner.DefaultDiffPath
 	if err := os.WriteFile(scratchPath, diffBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %s: %v\n", scratchPath, err)
+		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %q: %v\n", scratchPath, err)
 		return cmrunner.ExitError
 	}
 	defer os.Remove(scratchPath)
@@ -190,7 +189,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		ctx := context.Background()
 		code, _ := runner.RunFixPipeline(ctx, plan.RawFinding, plan.PassthroughFlags, stdout, stderr)
 		return code
-
 
 	default:
 		return cmrunner.ExitUsage

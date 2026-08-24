@@ -693,4 +693,3 @@ func TestRun_FindDiff_ConfigMutationError(t *testing.T) {
 		t.Errorf("expected config mutation error on stderr, got: %s", stderr.String())
 	}
 }
-
