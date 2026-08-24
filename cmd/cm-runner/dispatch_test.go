@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"cm-connect/pkg/cmrunner"
 )
 
@@ -544,122 +546,135 @@ func TestParseArgs_Fix(t *testing.T) {
 func TestParseArgs_FindDiff(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	t.Run("defaults to HEAD and consolidates base context when empty", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if plan.Action != ActionFindDiff {
-			t.Errorf("expected ActionFindDiff, got %v", plan.Action)
-		}
-		expectedGitArgs := []string{"HEAD"}
-		if !reflect.DeepEqual(plan.GitDiffArgs, expectedGitArgs) {
-			t.Errorf("expected GitDiffArgs %v, got %v", expectedGitArgs, plan.GitDiffArgs)
-		}
-		expectedPassthrough := []string{"--context=The target is a Git unified diff for this repository."}
-		if !reflect.DeepEqual(plan.PassthroughFlags, expectedPassthrough) {
-			t.Errorf("expected PassthroughFlags %v, got %v", expectedPassthrough, plan.PassthroughFlags)
-		}
-	})
+	tests := []struct {
+		name         string
+		args         []string
+		expectedPlan DispatchPlan
+		expectError  bool
+	}{
+		{
+			name: "defaults to HEAD and consolidates base context when empty",
+			args: []string{"find-diff"},
+			expectedPlan: DispatchPlan{
+				Action:           ActionFindDiff,
+				GitDiffArgs:      []string{"HEAD"},
+				PassthroughFlags: []string{"--context=The target is a Git unified diff for this repository."},
+			},
+		},
+		{
+			name: "positional git diff revisions before double-dash",
+			args: []string{"find-diff", "origin/main", "HEAD"},
+			expectedPlan: DispatchPlan{
+				Action:           ActionFindDiff,
+				GitDiffArgs:      []string{"origin/main", "HEAD"},
+				PassthroughFlags: []string{"--context=The target is a Git unified diff for this repository."},
+			},
+		},
+		{
+			name: "triple-dot git revision range",
+			args: []string{"find-diff", "origin/main...HEAD"},
+			expectedPlan: DispatchPlan{
+				Action:           ActionFindDiff,
+				GitDiffArgs:      []string{"origin/main...HEAD"},
+				PassthroughFlags: []string{"--context=The target is a Git unified diff for this repository."},
+			},
+		},
+		{
+			name: "consolidates separated user context flag -c <val>",
+			args: []string{"find-diff", "main", "HEAD", "--", "-c", "Check SQL injection", "--model=gemini-1.5-pro"},
+			expectedPlan: DispatchPlan{
+				Action:      ActionFindDiff,
+				GitDiffArgs: []string{"main", "HEAD"},
+				PassthroughFlags: []string{
+					"--context=The target is a Git unified diff for this repository. Check SQL injection",
+					"--model=gemini-1.5-pro",
+				},
+			},
+		},
+		{
+			name: "consolidates equals user context flag -c=<val>",
+			args: []string{"find-diff", "main", "HEAD", "--", "-c=Check SQL injection"},
+			expectedPlan: DispatchPlan{
+				Action:      ActionFindDiff,
+				GitDiffArgs: []string{"main", "HEAD"},
+				PassthroughFlags: []string{
+					"--context=The target is a Git unified diff for this repository. Check SQL injection",
+				},
+			},
+		},
+		{
+			name: "consolidates separated user context flag --context <val>",
+			args: []string{"find-diff", "--", "--context", "Check XSS", "--unrestricted"},
+			expectedPlan: DispatchPlan{
+				Action:      ActionFindDiff,
+				GitDiffArgs: []string{"HEAD"},
+				PassthroughFlags: []string{
+					"--context=The target is a Git unified diff for this repository. Check XSS",
+					"--unrestricted",
+				},
+			},
+		},
+		{
+			name: "consolidates equals user context flag --context=<val>",
+			args: []string{"find-diff", "--", "--context=Check XSS"},
+			expectedPlan: DispatchPlan{
+				Action:      ActionFindDiff,
+				GitDiffArgs: []string{"HEAD"},
+				PassthroughFlags: []string{
+					"--context=The target is a Git unified diff for this repository. Check XSS",
+				},
+			},
+		},
+		{
+			name: "help flag --help",
+			args: []string{"find-diff", "--help"},
+			expectedPlan: DispatchPlan{
+				Action: ActionHelp,
+			},
+		},
+		{
+			name: "help flag -h",
+			args: []string{"find-diff", "-h"},
+			expectedPlan: DispatchPlan{
+				Action: ActionHelp,
+			},
+		},
+		{
+			name: "help flag in passthrough flags",
+			args: []string{"find-diff", "main", "HEAD", "--", "--help"},
+			expectedPlan: DispatchPlan{
+				Action: ActionHelp,
+			},
+		},
+		{
+			name: "short help flag -h in passthrough flags",
+			args: []string{"find-diff", "main", "HEAD", "--", "-h"},
+			expectedPlan: DispatchPlan{
+				Action: ActionHelp,
+			},
+		},
+		{
+			name:        "redundant cm prefix rejected",
+			args:        []string{"cm", "find-diff", "origin/main"},
+			expectError: true,
+		},
+	}
 
-	t.Run("positional git diff revisions before double-dash", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "origin/main", "HEAD"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if plan.Action != ActionFindDiff {
-			t.Errorf("expected ActionFindDiff, got %v", plan.Action)
-		}
-		expectedGitArgs := []string{"origin/main", "HEAD"}
-		if !reflect.DeepEqual(plan.GitDiffArgs, expectedGitArgs) {
-			t.Errorf("expected GitDiffArgs %v, got %v", expectedGitArgs, plan.GitDiffArgs)
-		}
-	})
-
-	t.Run("triple-dot git revision range", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "origin/main...HEAD"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expectedGitArgs := []string{"origin/main...HEAD"}
-		if !reflect.DeepEqual(plan.GitDiffArgs, expectedGitArgs) {
-			t.Errorf("expected GitDiffArgs %v, got %v", expectedGitArgs, plan.GitDiffArgs)
-		}
-	})
-
-	t.Run("consolidates separated user context flag -c <val>", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "main", "HEAD", "--", "-c", "Check SQL injection", "--model=gemini-1.5-pro"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if plan.Action != ActionFindDiff {
-			t.Errorf("expected ActionFindDiff, got %v", plan.Action)
-		}
-		expectedGitArgs := []string{"main", "HEAD"}
-		if !reflect.DeepEqual(plan.GitDiffArgs, expectedGitArgs) {
-			t.Errorf("expected GitDiffArgs %v, got %v", expectedGitArgs, plan.GitDiffArgs)
-		}
-		expectedPassthrough := []string{"--context=The target is a Git unified diff for this repository. Check SQL injection", "--model=gemini-1.5-pro"}
-		if !reflect.DeepEqual(plan.PassthroughFlags, expectedPassthrough) {
-			t.Errorf("expected PassthroughFlags %v, got %v", expectedPassthrough, plan.PassthroughFlags)
-		}
-	})
-
-	t.Run("consolidates equals user context flag -c=<val>", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "main", "HEAD", "--", "-c=Check SQL injection"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expectedPassthrough := []string{"--context=The target is a Git unified diff for this repository. Check SQL injection"}
-		if !reflect.DeepEqual(plan.PassthroughFlags, expectedPassthrough) {
-			t.Errorf("expected PassthroughFlags %v, got %v", expectedPassthrough, plan.PassthroughFlags)
-		}
-	})
-
-	t.Run("consolidates separated user context flag --context <val>", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "--", "--context", "Check XSS", "--unrestricted"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expectedPassthrough := []string{"--context=The target is a Git unified diff for this repository. Check XSS", "--unrestricted"}
-		if !reflect.DeepEqual(plan.PassthroughFlags, expectedPassthrough) {
-			t.Errorf("expected PassthroughFlags %v, got %v", expectedPassthrough, plan.PassthroughFlags)
-		}
-	})
-
-	t.Run("consolidates equals user context flag --context=<val>", func(t *testing.T) {
-		plan, err := parseArgs(tmpDir, []string{"find-diff", "--", "--context=Check XSS"}, nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		expectedPassthrough := []string{"--context=The target is a Git unified diff for this repository. Check XSS"}
-		if !reflect.DeepEqual(plan.PassthroughFlags, expectedPassthrough) {
-			t.Errorf("expected PassthroughFlags %v, got %v", expectedPassthrough, plan.PassthroughFlags)
-		}
-	})
-
-	t.Run("help flags return ActionHelp", func(t *testing.T) {
-		helpInvocations := [][]string{
-			{"find-diff", "--help"},
-			{"find-diff", "-h"},
-			{"find-diff", "main", "HEAD", "--", "--help"},
-			{"find-diff", "main", "HEAD", "--", "-h"},
-		}
-		for _, args := range helpInvocations {
-			plan, err := parseArgs(tmpDir, args, nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := parseArgs(tmpDir, tc.args, nil)
+			if tc.expectError {
+				if err == nil {
+					t.Fatalf("expected error for args %v, got plan: %+v", tc.args, plan)
+				}
+				return
+			}
 			if err != nil {
-				t.Fatalf("unexpected error for %v: %v", args, err)
+				t.Fatalf("unexpected error for args %v: %v", tc.args, err)
 			}
-			if plan.Action != ActionHelp {
-				t.Errorf("expected ActionHelp for %v, got %v", args, plan.Action)
+			if diff := cmp.Diff(tc.expectedPlan, plan); diff != "" {
+				t.Errorf("parseArgs(%v) mismatch (-want +got):\n%s", tc.args, diff)
 			}
-		}
-	})
-
-	t.Run("redundant cm prefix rejected", func(t *testing.T) {
-		_, err := parseArgs(tmpDir, []string{"cm", "find-diff", "origin/main"}, nil)
-		if err == nil {
-			t.Error("expected error for 'cm find-diff', got nil")
-		}
-	})
+		})
+	}
 }
