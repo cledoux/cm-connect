@@ -194,7 +194,7 @@ const DefaultDiffPath = "/tmp/cm-diff.diff"
 
 // BaseDiffContext defines the default context prompt grounding CodeMender in diff scanning.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-const BaseDiffContext = "The target is a Git unified diff for this repository."
+const BaseDiffContext = "The target is a Git unified diff for this repository. Scan the diff."
 
 // ConsolidateContext merges the base diff context prompt with any user-supplied
 // context flags (-c or --context), stripping standalone user context flags from the

@@ -50,25 +50,13 @@ func LoadConfigFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
 	}
-
-	cfg, err := ParseConfig(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
-	}
-	cfg.path = path
-	return cfg, nil
-}
-
-// ParseConfig parses a raw YAML byte slice into a Config object.
-// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
-func ParseConfig(data []byte) (*Config, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, errors.New("empty YAML document")
 	}
 
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML document: %w", err)
+		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
 	}
 
 	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
@@ -78,7 +66,7 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("root node is not a mapping (got kind %v)", root.Content[0].Kind)
 	}
 
-	return &Config{root: root}, nil
+	return &Config{root: root, path: path}, nil
 }
 
 // ApplyOverrides applies a dictionary of key-path to value mappings to the YAML AST in-place.
@@ -124,9 +112,9 @@ func (c *Config) AppendExtension(ext string) error {
 	})
 }
 
-// Bytes serializes the mutated YAML document back to formatted bytes.
+// bytes serializes the mutated YAML document back to formatted bytes.
 // Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
-func (c *Config) Bytes() ([]byte, error) {
+func (c *Config) bytes() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -141,6 +129,8 @@ func (c *Config) Bytes() ([]byte, error) {
 
 // Write writes the serialized YAML document back to disk at the config's path.
 // If the config was not loaded from a file, it writes to DefaultConfigPath().
+// Note: Write is not thread-safe and does not verify that the on-disk file remains
+// unchanged since LoadConfig or LoadConfigFile was called.
 // Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
 func (c *Config) Write() error {
 	dest := c.path
@@ -152,7 +142,7 @@ func (c *Config) Write() error {
 		dest = defaultPath
 	}
 
-	data, err := c.Bytes()
+	data, err := c.bytes()
 	if err != nil {
 		return err
 	}

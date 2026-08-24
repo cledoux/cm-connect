@@ -106,44 +106,17 @@ func TestLoadConfigFile(t *testing.T) {
 	})
 }
 
-func TestParseConfig(t *testing.T) {
-	t.Run("valid YAML bytes", func(t *testing.T) {
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
-		if err != nil {
-			t.Fatalf("unexpected ParseConfig error: %v", err)
-		}
-		if cfg == nil {
-			t.Fatal("expected non-nil Config")
-		}
-	})
-
-	t.Run("empty YAML bytes", func(t *testing.T) {
-		_, err := ParseConfig([]byte(""))
-		if err == nil {
-			t.Errorf("expected error for empty YAML, got nil")
-		}
-	})
-
-	t.Run("malformed YAML bytes", func(t *testing.T) {
-		_, err := ParseConfig([]byte("scan: [broken"))
-		if err == nil {
-			t.Errorf("expected error for malformed YAML, got nil")
-		}
-	})
-
-	t.Run("non-mapping root node", func(t *testing.T) {
-		_, err := ParseConfig([]byte("- item1\n- item2\n"))
-		if err == nil {
-			t.Errorf("expected error for sequence root node, got nil")
-		}
-	})
-}
-
 func TestConfig_ApplyOverrides(t *testing.T) {
 	t.Run("applies scalar and sequence overrides", func(t *testing.T) {
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
 		}
 
 		err = cfg.ApplyOverrides(map[string]any{
@@ -157,9 +130,13 @@ func TestConfig_ApplyOverrides(t *testing.T) {
 			t.Fatalf("unexpected ApplyOverrides error: %v", err)
 		}
 
-		bytesOut, err := cfg.Bytes()
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		bytesOut, err := os.ReadFile(configPath)
 		if err != nil {
-			t.Fatalf("unexpected Bytes error: %v", err)
+			t.Fatalf("failed to read output file: %v", err)
 		}
 
 		var parsed struct {
@@ -205,13 +182,19 @@ func TestConfig_ApplyOverrides(t *testing.T) {
 	})
 
 	t.Run("fails on missing critical keys", func(t *testing.T) {
+		tempDir := t.TempDir()
+		invalidPath := filepath.Join(tempDir, "invalid.yaml")
 		invalidYAML := `
 scan:
   max_file_size_kb: 1024
 `
-		cfg, err := ParseConfig([]byte(invalidYAML))
+		if err := os.WriteFile(invalidPath, []byte(invalidYAML), 0o600); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(invalidPath)
 		if err != nil {
-			t.Fatalf("unexpected parse error: %v", err)
+			t.Fatalf("unexpected load error: %v", err)
 		}
 
 		err = cfg.ApplyOverrides(map[string]any{
@@ -223,14 +206,20 @@ scan:
 	})
 
 	t.Run("fails on non-sequence key for slice override", func(t *testing.T) {
+		tempDir := t.TempDir()
+		scalarPath := filepath.Join(tempDir, "scalar.yaml")
 		scalarYAML := `
 scan:
   extensions:
     include: ".go"
 `
-		cfg, err := ParseConfig([]byte(scalarYAML))
+		if err := os.WriteFile(scalarPath, []byte(scalarYAML), 0o600); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(scalarPath)
 		if err != nil {
-			t.Fatalf("unexpected parse error: %v", err)
+			t.Fatalf("unexpected load error: %v", err)
 		}
 
 		err = cfg.ApplyOverrides(map[string]any{
@@ -242,12 +231,18 @@ scan:
 	})
 
 	t.Run("fails on intermediate non-mapping node", func(t *testing.T) {
+		tempDir := t.TempDir()
+		badPath := filepath.Join(tempDir, "bad.yaml")
 		badYAML := `
 scan: "not-a-map"
 `
-		cfg, err := ParseConfig([]byte(badYAML))
+		if err := os.WriteFile(badPath, []byte(badYAML), 0o600); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(badPath)
 		if err != nil {
-			t.Fatalf("unexpected parse error: %v", err)
+			t.Fatalf("unexpected load error: %v", err)
 		}
 
 		err = cfg.ApplyOverrides(map[string]any{
@@ -259,9 +254,15 @@ scan: "not-a-map"
 	})
 
 	t.Run("fails on unsupported type", func(t *testing.T) {
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
 		if err != nil {
-			t.Fatalf("unexpected parse error: %v", err)
+			t.Fatalf("unexpected load error: %v", err)
 		}
 
 		err = cfg.ApplyOverrides(map[string]any{
@@ -275,7 +276,13 @@ scan: "not-a-map"
 
 func TestConfig_AppendExtension(t *testing.T) {
 	t.Run("appends extension and enforces idempotency", func(t *testing.T) {
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -290,9 +297,13 @@ func TestConfig_AppendExtension(t *testing.T) {
 			t.Fatalf("unexpected second AppendExtension error: %v", err)
 		}
 
-		bytesOut, err := cfg.Bytes()
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		bytesOut, err := os.ReadFile(configPath)
 		if err != nil {
-			t.Fatalf("unexpected Bytes error: %v", err)
+			t.Fatalf("failed to read back config: %v", err)
 		}
 
 		var parsed struct {
@@ -358,19 +369,30 @@ func TestConfig_Write(t *testing.T) {
 		if err := os.MkdirAll(cmDir, 0o755); err != nil {
 			t.Fatalf("failed to create dir: %v", err)
 		}
+		configPath := filepath.Join(cmDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
 
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		cfg, err := LoadConfig()
 		if err != nil {
-			t.Fatalf("unexpected ParseConfig error: %v", err)
+			t.Fatalf("unexpected LoadConfig error: %v", err)
+		}
+
+		if err := cfg.AppendExtension(".diff"); err != nil {
+			t.Fatalf("unexpected AppendExtension error: %v", err)
 		}
 
 		if err := cfg.Write(); err != nil {
 			t.Fatalf("unexpected Write error: %v", err)
 		}
 
-		expectedPath := filepath.Join(cmDir, "config.yaml")
-		if _, err := os.Stat(expectedPath); err != nil {
-			t.Errorf("expected config file at %q: %v", expectedPath, err)
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read back config: %v", err)
+		}
+		if !strings.Contains(string(data), ".diff") {
+			t.Errorf("expected config to contain .diff, got:\n%s", string(data))
 		}
 	})
 }
