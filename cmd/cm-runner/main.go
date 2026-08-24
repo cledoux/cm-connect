@@ -62,9 +62,16 @@ Exit Codes:
 }
 
 // execGitDiffFn executes git diff within the specified directory (pluggable for testing).
+// Governing: ADR-0007, ADR-0008, REQ-0014, SPEC-cm-batch-runner
 var execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"diff"}, args...)...)
+	cmdArgs := append([]string{"--no-pager", "diff"}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_PAGER=cat",
+		"GIT_LFS_SKIP_SMUDGE=1",
+	)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -105,7 +112,7 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 
 	scratchPath := cmrunner.DefaultDiffPath
 	if err := os.WriteFile(scratchPath, diffBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %s: %v\n", scratchPath, err)
+		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %q: %v\n", scratchPath, err)
 		return cmrunner.ExitError
 	}
 	defer os.Remove(scratchPath)
