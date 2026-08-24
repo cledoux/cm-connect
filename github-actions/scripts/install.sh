@@ -2,6 +2,12 @@
 # Usage: ./github-actions/scripts/install.sh <path-to-target-repo>
 set -euo pipefail
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  echo "Usage: $0 <path-to-target-repo>"
+  echo "Installs CodeMender GitHub Actions review workflow and helper scripts into target repository."
+  exit 0
+fi
+
 TARGET_REPO="${1:-}"
 if [ -z "${TARGET_REPO}" ] || [ ! -d "${TARGET_REPO}" ]; then
   echo "Error: Target repository directory '${TARGET_REPO}' does not exist or is not a directory." >&2
