@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -556,3 +557,140 @@ func TestRun_Fix_NonExistentFile(t *testing.T) {
 		t.Errorf("expected finding file not found on stderr, got: %s", stderr.String())
 	}
 }
+
+func TestRun_FindDiff_EmptyDiff_FastPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	_ = os.MkdirAll(cmDir, 0755)
+	configPath := filepath.Join(cmDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600)
+
+	oldGitDiff := execGitDiffFn
+	defer func() { execGitDiffFn = oldGitDiff }()
+
+	execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		return []byte(""), nil // 0 bytes empty diff
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "HEAD", "HEAD"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0) for empty diff fast-path, got %d (stderr: %s)", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "[]" {
+		t.Errorf("expected '[]' on stdout for empty diff, got: %q", stdout.String())
+	}
+}
+
+func TestRun_FindDiff_GitError_ExitUsage(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	_ = os.MkdirAll(cmDir, 0755)
+	configPath := filepath.Join(cmDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600)
+
+	oldGitDiff := execGitDiffFn
+	defer func() { execGitDiffFn = oldGitDiff }()
+
+	execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		return nil, errors.New("fatal: bad revision 'non-existent-sha'")
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "non-existent-sha"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitUsage {
+		t.Fatalf("expected ExitUsage (2) for git diff error, got %d (stderr: %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "git diff failed") || !strings.Contains(stderr.String(), "fetch-depth: 0") {
+		t.Errorf("expected git diff error and fetch-depth hint on stderr, got: %s", stderr.String())
+	}
+}
+
+func TestRun_FindDiff_Success_TwoPhase(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	_ = os.MkdirAll(cmDir, 0755)
+	configPath := filepath.Join(cmDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600)
+
+	oldGitDiff := execGitDiffFn
+	defer func() { execGitDiffFn = oldGitDiff }()
+
+	sampleDiff := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n"
+	execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		return []byte(sampleDiff), nil
+	}
+
+	mockCM := filepath.Join(tmpHome, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
+    echo "find diff progress on stderr" >&2
+    exit 0
+elif [ "$cmd" = "report" ]; then
+    echo '[{"FindingID":"diff-vuln-1","Title":"Diff Vulnerability"}]'
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write mock cm script: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "origin/main", "HEAD", "--", "-c", "Extra diff check"}, strings.NewReader(""), &stdout, &stderr, tmpHome, mockCM)
+	if code != cmrunner.ExitFindings {
+		t.Fatalf("expected ExitFindings (1) for findings in diff, got %d (stderr: %s)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Diff Vulnerability") {
+		t.Errorf("expected findings on stdout, got: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "find diff progress on stderr") {
+		t.Errorf("expected progress on stderr, got: %s", stderr.String())
+	}
+
+	// Verify .diff was registered in config.yaml
+	mutatedContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read mutated config: %v", err)
+	}
+	if !strings.Contains(string(mutatedContent), ".diff") {
+		t.Errorf("expected .diff in config.yaml, got:\n%s", string(mutatedContent))
+	}
+}
+
+func TestRun_FindDiff_ConfigMutationError(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Unsetenv("HOME")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "HEAD"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitError {
+		t.Fatalf("expected ExitError (>2) when HOME is unset, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "failed to register .diff extension") {
+		t.Errorf("expected config mutation error on stderr, got: %s", stderr.String())
+	}
+}
+
