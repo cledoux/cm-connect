@@ -13,7 +13,7 @@ import (
 )
 
 // ActionType represents the execution action determined by argument parsing.
-// Governing: ADR-0001, ADR-0002, SPEC-cm-batch-runner
+// Governing: ADR-0001, ADR-0002, ADR-0007, SPEC-cm-batch-runner
 type ActionType int
 
 const (
@@ -23,24 +23,27 @@ const (
 	ActionShell
 	ActionRunSequence
 	ActionFix
+	ActionFindDiff
 )
 
 // DispatchPlan encapsulates the routing decision and associated execution parameters.
-// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner
+// Governing: ADR-0001, ADR-0002, ADR-0005, ADR-0007, SPEC-cm-batch-runner, SPEC-cm-fix-runner
 type DispatchPlan struct {
 	Action           ActionType
 	Commands         []cmrunner.Command
 	TargetDir        string
 	RawFinding       []byte
 	PassthroughFlags []string
+	GitDiffArgs      []string
 }
 
 var (
-	errMissingSubcommand = errors.New("missing subcommand: specify 'find', 'shell', or 'init'")
+	errMissingSubcommand = errors.New("missing subcommand: specify 'find', 'find-diff', 'fix', 'shell', or 'init'")
 	errInvalidSubcommand = errors.New("unrecognized subcommand")
 	errPathNotFound      = errors.New("scan target path does not exist in workspace")
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
 )
+
 
 // partitionDash splits raw arguments into tokens before '--' and tokens after '--'.
 // Governing: ADR-0002, SPEC-cm-batch-runner, REQ-0006
@@ -157,9 +160,81 @@ func parseInitArgs(args []string) (DispatchPlan, error) {
 	return DispatchPlan{Action: ActionInit}, nil
 }
 
+const baseDiffContext = "The target is a Git unified diff for this repository."
+
+// consolidateContext merges user-provided -c or --context flags with the base diff grounding context.
+// Standalone user context flags are stripped from the passthrough slice to avoid multiple context flags.
+// Governing: ADR-0007, REQ-0014, SPEC-cm-batch-runner
+func consolidateContext(flags []string) []string {
+	var userContexts []string
+	var remaining []string
+
+	for i := 0; i < len(flags); i++ {
+		flag := flags[i]
+		if flag == "-c" || flag == "--context" {
+			if i+1 < len(flags) {
+				userContexts = append(userContexts, flags[i+1])
+				i++ // skip next token
+			}
+			continue
+		}
+		if strings.HasPrefix(flag, "-c=") {
+			val := strings.TrimPrefix(flag, "-c=")
+			userContexts = append(userContexts, val)
+			continue
+		}
+		if strings.HasPrefix(flag, "--context=") {
+			val := strings.TrimPrefix(flag, "--context=")
+			userContexts = append(userContexts, val)
+			continue
+		}
+		remaining = append(remaining, flag)
+	}
+
+	var consolidated string
+	if len(userContexts) > 0 {
+		userText := strings.TrimSpace(strings.Join(userContexts, " "))
+		if userText != "" {
+			consolidated = fmt.Sprintf("%s %s", baseDiffContext, userText)
+		} else {
+			consolidated = baseDiffContext
+		}
+	} else {
+		consolidated = baseDiffContext
+	}
+
+	contextFlag := fmt.Sprintf("--context=%s", consolidated)
+	return append([]string{contextFlag}, remaining...)
+}
+
+// parseFindDiffArgs processes CLI arguments for the diff-aware scanning subcommand 'find-diff'.
+// Positional tokens before '--' are forwarded directly to git diff (defaulting to HEAD if empty).
+// Flags after '--' are forwarded to cm find with consolidated context.
+// Governing: ADR-0007, REQ-0014, SPEC-cm-batch-runner
+func parseFindDiffArgs(workspaceRoot string, args []string) (DispatchPlan, error) {
+	beforeDash, afterDash := partitionDash(args)
+
+	if isHelpRequested(beforeDash) || isHelpRequested(afterDash) {
+		return DispatchPlan{Action: ActionHelp}, nil
+	}
+
+	gitDiffArgs := beforeDash
+	if len(gitDiffArgs) == 0 {
+		gitDiffArgs = []string{"HEAD"}
+	}
+
+	passthrough := consolidateContext(afterDash)
+
+	return DispatchPlan{
+		Action:           ActionFindDiff,
+		GitDiffArgs:      gitDiffArgs,
+		PassthroughFlags: passthrough,
+	}, nil
+}
+
 // parseArgs parses raw CLI arguments into a DispatchPlan.
 // Enforces exact os.Args[1] subcommand dispatch and '--' passthrough partitioning.
-// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009
+// Governing: ADR-0001, ADR-0002, ADR-0005, ADR-0007, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0004, REQ-0005, REQ-0006, REQ-0008, REQ-0009, REQ-0014
 func parseArgs(workspaceRoot string, rawArgs []string, stdin ...io.Reader) (DispatchPlan, error) {
 	if len(rawArgs) == 0 {
 		return DispatchPlan{}, errMissingSubcommand
@@ -176,6 +251,8 @@ func parseArgs(workspaceRoot string, rawArgs []string, stdin ...io.Reader) (Disp
 		return parseShellArgs(workspaceRoot, rawArgs[1:])
 	case "find":
 		return parseFindArgs(workspaceRoot, rawArgs[1:])
+	case "find-diff":
+		return parseFindDiffArgs(workspaceRoot, rawArgs[1:])
 	case "init":
 		return parseInitArgs(rawArgs[1:])
 	case "fix":
@@ -184,6 +261,7 @@ func parseArgs(workspaceRoot string, rawArgs []string, stdin ...io.Reader) (Disp
 		return DispatchPlan{}, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 }
+
 
 func parseFixArgs(workspaceRoot string, args []string, stdin io.Reader) (DispatchPlan, error) {
 	beforeDash, afterDash := partitionDash(args)
