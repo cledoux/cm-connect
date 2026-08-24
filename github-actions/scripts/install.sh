@@ -11,6 +11,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKFLOW_SRC_DIR="$(cd "${SCRIPT_DIR}/../workflows" && pwd)"
+TERRAFORM_SRC_DIR="$(cd "${SCRIPT_DIR}/../terraform" && pwd)"
 
 mkdir -p "${TARGET_REPO}/.github/workflows"
 mkdir -p "${TARGET_REPO}/.github/scripts"
@@ -28,7 +29,17 @@ if [ -f "${SCRIPT_DIR}/publish_comments.py" ]; then
   chmod +x "${TARGET_REPO}/.github/scripts/publish_comments.py"
 fi
 
+if [ -f "${SCRIPT_DIR}/setup-wif.sh" ]; then
+  cp "${SCRIPT_DIR}/setup-wif.sh" "${TARGET_REPO}/.github/scripts/setup-wif.sh"
+  chmod +x "${TARGET_REPO}/.github/scripts/setup-wif.sh"
+fi
+
+if [ -d "${TERRAFORM_SRC_DIR}" ]; then
+  mkdir -p "${TARGET_REPO}/.github/terraform"
+  cp -r "${TERRAFORM_SRC_DIR}"/* "${TARGET_REPO}/.github/terraform/"
+fi
+
 echo "✓ Successfully installed CodeMender workflow to ${TARGET_REPO}/.github/workflows/codemender.yml"
 echo "Next steps:"
-echo "1. Run ./github-actions/scripts/setup-wif.sh to configure Google Cloud IAM & WIF"
+echo "1. Provision Google Cloud WIF & IAM via Terraform (.github/terraform) or helper script (.github/scripts/setup-wif.sh)"
 echo "2. Add GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT secrets to your GitHub repository"
