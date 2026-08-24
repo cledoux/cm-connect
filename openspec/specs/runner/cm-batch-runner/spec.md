@@ -7,6 +7,7 @@ governing_proposal: cm-batch-runner
 governing_adrs:
   - adrs/ADR-0001.md
   - adrs/ADR-0002.md
+  - adrs/ADR-0007.md
 ---
 
 # CodeMender Headless Batch Scanner Container Specification (`find`)
@@ -520,3 +521,70 @@ ______________________________________________________________________
 - **WHEN** the container receives a `SIGTERM` signal
 - **THEN** `cm-runner` MUST forward the signal to child process groups and exit
   cleanly within 1 second.
+
+______________________________________________________________________
+
+### REQ-0014: Native Diff-Aware Vulnerability Scanning Container Protocol (`find-diff`)
+
+The container runner MUST support a dedicated top-level subcommand `find-diff`
+for diff-scoped vulnerability discovery, implementing ADR-0007:
+
+1. **Subcommand Routing:** `cm-runner` MUST require `os.Args[1] == "find-diff"`.
+1. **Git Diff Execution & Passthrough:** All positional tokens before `--` MUST
+   be forwarded directly to `git diff` inside `/workspace` (supporting ref
+   pairs, triple-dot ranges, or defaulting to `HEAD` if omitted).
+1. **Ephemeral Scratch Staging:** The generated diff MUST be written to
+   container scratch space (`/tmp/cm-diff.diff`) completely outside
+   `/workspace`, preventing deletion by `cm find` workspace cleanup routines and
+   protecting subsequent `fix` patch extractions from untracked file pollution.
+1. **Dynamic `.diff` Extension Registration:** `cm-runner` MUST dynamically
+   mutate `$HOME/.codemender/config.yaml` via `pkg/cmconfig` to ensure
+   `scan.extensions.include` contains `".diff"`.
+1. **Context Prompt Consolidation:** `cm-runner` MUST inject the base context
+   flag `--context="The target is a Git unified diff for this repository."`. If
+   the caller provides custom `-c` or `--context` flags after `--`, `cm-runner`
+   MUST merge them into a single consolidated `--context` argument and strip the
+   standalone user flag from passthrough args.
+1. **Empty Diff Fast-Path:** If `git diff` produces 0 bytes output, `find-diff`
+   MUST immediately emit `[]` on `stdout`, log an info message to `stderr`, and
+   terminate with exit code `0` without invoking remote LLM APIs.
+1. **Defensive Git Error Handling:** If `git diff` exits non-zero (e.g. invalid
+   revision, shallow clone), `find-diff` MUST emit a descriptive error to
+   `stderr` advising repository history configuration (e.g. `fetch-depth: 0`)
+   and terminate with exit code `2`.
+1. **Ephemeral Teardown:** Upon completion, `find-diff` MUST remove
+   `/tmp/cm-diff.diff`.
+
+#### Scenario: Execute find-diff on modified PR commits
+
+- **GIVEN** a git repository at `/workspace` with commits between `origin/main`
+  and `HEAD`
+- **WHEN** executing `cm-runner find-diff origin/main HEAD`
+- **THEN** `cm-runner` MUST execute `git diff origin/main HEAD` into
+  `/tmp/cm-diff.diff`
+- **AND** mutate `$HOME/.codemender/config.yaml` to include `.diff`
+- **AND** execute
+  `cm find /tmp/cm-diff.diff -y --context="The target is a Git unified diff for this repository."`
+- **AND** emit structured findings JSON to `stdout`.
+
+#### Scenario: Short-circuit on empty git diff
+
+- **GIVEN** a git repository where `git diff HEAD HEAD` produces 0 bytes
+- **WHEN** executing `cm-runner find-diff HEAD HEAD`
+- **THEN** `cm-runner` MUST immediately emit `[]` on `stdout`
+- **AND** terminate cleanly with exit code `0`.
+
+#### Scenario: Consolidate user-supplied context flags
+
+- **GIVEN** an invocation
+  `cm-runner find-diff origin/main HEAD -- -c "Focus on SQL injection"`
+- **WHEN** `cm-runner` prepares the find command
+- **THEN** `cm find` MUST receive
+  `--context="The target is a Git unified diff for this repository. Focus on SQL injection"`.
+
+#### Scenario: Fail fast on invalid git revisions
+
+- **GIVEN** an invocation `cm-runner find-diff non-existent-sha`
+- **WHEN** `git diff` exits with error code 128
+- **THEN** `cm-runner` MUST emit a diagnostic error to `stderr` and exit with
+  code `2`.

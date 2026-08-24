@@ -7,6 +7,7 @@ governing_spec: openspec/specs/runner/cm-batch-runner/spec.md
 governing_adrs:
   - adrs/ADR-0001.md
   - adrs/ADR-0002.md
+  - adrs/ADR-0007.md
 ---
 
 # CodeMender Headless Batch Scanner Container Design (`find`)
