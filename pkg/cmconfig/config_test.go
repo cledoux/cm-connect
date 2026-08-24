@@ -619,3 +619,194 @@ func TestAppendScanExtension(t *testing.T) {
 		}
 	})
 }
+
+func TestConfig_ObjectMethods(t *testing.T) {
+	t.Run("LoadConfig and Config methods workflow", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfig error: %v", err)
+		}
+
+		if cfg.Path() != configPath {
+			t.Errorf("expected path %q, got %q", configPath, cfg.Path())
+		}
+
+		// Apply custom overrides
+		if err := cfg.ApplyOverrides(map[string]any{
+			"server.port": 9000,
+		}); err != nil {
+			t.Fatalf("unexpected ApplyOverrides error: %v", err)
+		}
+
+		// Ensure .diff extension
+		if err := cfg.EnsureDiffExtension(); err != nil {
+			t.Fatalf("unexpected EnsureDiffExtension error: %v", err)
+		}
+
+		// Append another extension
+		if err := cfg.AppendScanExtension(".patch"); err != nil {
+			t.Fatalf("unexpected AppendScanExtension error: %v", err)
+		}
+
+		// Apply default overrides
+		if err := cfg.ApplyDefaultOverrides(); err != nil {
+			t.Fatalf("unexpected ApplyDefaultOverrides error: %v", err)
+		}
+
+		// Serialize to bytes
+		bytesOut, err := cfg.Bytes()
+		if err != nil {
+			t.Fatalf("unexpected Bytes error: %v", err)
+		}
+		if !strings.Contains(string(bytesOut), ".diff") || !strings.Contains(string(bytesOut), ".patch") {
+			t.Errorf("expected output to contain extensions, got:\n%s", string(bytesOut))
+		}
+
+		// Write to same file
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		// Write to alternate file
+		altPath := filepath.Join(tempDir, "alt_config.yaml")
+		if err := cfg.Write(altPath); err != nil {
+			t.Fatalf("unexpected Write to alt path error: %v", err)
+		}
+		if cfg.Path() != altPath {
+			t.Errorf("expected path %q, got %q", altPath, cfg.Path())
+		}
+
+		altData, err := os.ReadFile(altPath)
+		if err != nil {
+			t.Fatalf("failed to read alt config: %v", err)
+		}
+		if !strings.Contains(string(altData), "port: 9000") {
+			t.Errorf("expected alt config to contain port: 9000, got:\n%s", string(altData))
+		}
+	})
+
+	t.Run("LoadConfig error on non-existent file", func(t *testing.T) {
+		_, err := LoadConfig("/non/existent/path/config.yaml")
+		if err == nil {
+			t.Errorf("expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("LoadConfig error on invalid YAML", func(t *testing.T) {
+		tempDir := t.TempDir()
+		badPath := filepath.Join(tempDir, "bad.yaml")
+		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
+			t.Fatalf("failed to write bad file: %v", err)
+		}
+		_, err := LoadConfig(badPath)
+		if err == nil {
+			t.Errorf("expected error for invalid YAML file, got nil")
+		}
+	})
+
+	t.Run("Write error on empty path", func(t *testing.T) {
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		if err != nil {
+			t.Fatalf("unexpected ParseConfig error: %v", err)
+		}
+		if err := cfg.Write(); err == nil {
+			t.Errorf("expected error writing Config with empty path, got nil")
+		}
+	})
+}
+
+func TestApplyOverrides_TopLevelFunction(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	err := ApplyOverrides(configPath, map[string]any{
+		"server.port": 7070,
+	})
+	if err != nil {
+		t.Fatalf("unexpected ApplyOverrides error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read updated config: %v", err)
+	}
+	if !strings.Contains(string(data), "port: 7070") {
+		t.Errorf("expected config to contain port: 7070, got:\n%s", string(data))
+	}
+
+	t.Run("non-existent file error", func(t *testing.T) {
+		err := ApplyOverrides("/non/existent/config.yaml", map[string]any{"server.port": 7070})
+		if err == nil {
+			t.Errorf("expected error for non-existent file, got nil")
+		}
+	})
+}
+
+func TestApplyDefaultOverrides_TopLevelFunction(t *testing.T) {
+	t.Run("with explicit path", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := ApplyDefaultOverrides(configPath); err != nil {
+			t.Fatalf("unexpected ApplyDefaultOverrides error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+		if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
+			t.Errorf("expected config to contain format: json, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("with default path", func(t *testing.T) {
+		tempDir := t.TempDir()
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Setenv("HOME", tempDir)
+
+		cmDir := filepath.Join(tempDir, ".codemender")
+		if err := os.MkdirAll(cmDir, 0o755); err != nil {
+			t.Fatalf("failed to create .codemender dir: %v", err)
+		}
+		configPath := filepath.Join(cmDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := ApplyDefaultOverrides(); err != nil {
+			t.Fatalf("unexpected ApplyDefaultOverrides() error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+		if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
+			t.Errorf("expected config to contain format: json, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("error when HOME is unset and path omitted", func(t *testing.T) {
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Unsetenv("HOME")
+
+		if err := ApplyDefaultOverrides(); err == nil {
+			t.Errorf("expected error when HOME unset and path omitted, got nil")
+		}
+	})
+}
