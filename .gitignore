@@ -9,6 +9,9 @@ report.json
 coverage.out
 coverage.html
 coverage.txt
+__pycache__/
+*.pyc
+*.pyo
 
 # Editor and OS metadata
 .DS_Store

@@ -248,6 +248,11 @@ def publish_comments(
 
 def main() -> None:
     """CLI entrypoint for standalone execution."""
+    if "-h" in sys.argv or "--help" in sys.argv:
+        print("Usage: python3 publish_comments.py <change_envelope.json>", file=sys.stdout)
+        print("Translates ChangeEnvelope JSON into PR review comments or issue comments.")
+        sys.exit(0)
+
     if len(sys.argv) < 2 and not os.environ.get("ENVELOPE_PATH"):
         print("Usage: python3 publish_comments.py <change_envelope.json>", file=sys.stderr)
         sys.exit(1)

@@ -96,7 +96,7 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 
 	scratchPath := cmrunner.DefaultDiffPath
 	if err := os.WriteFile(scratchPath, diffBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %q: %v\n", scratchPath, err)
+		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %s: %v\n", scratchPath, err)
 		return cmrunner.ExitError
 	}
 	defer os.Remove(scratchPath)
