@@ -372,8 +372,8 @@ func TestRun_Init_HomeUnset(t *testing.T) {
 	if code != cmrunner.ExitError {
 		t.Fatalf("expected ExitError when HOME is unset, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "failed to determine default config path") {
-		t.Errorf("expected default config path error on stderr, got:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "failed to initialize configuration") || !strings.Contains(stderr.String(), "HOME environment variable is not set") {
+		t.Errorf("expected HOME unset error on stderr, got:\n%s", stderr.String())
 	}
 }
 

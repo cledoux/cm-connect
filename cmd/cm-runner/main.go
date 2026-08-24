@@ -73,12 +73,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		return cmrunner.ExitClean
 
 	case ActionInit:
-		configPath, err := cmconfig.DefaultConfigPath()
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: failed to determine default config path: %v\n", err)
-			return cmrunner.ExitError
-		}
-		if err := cmconfig.MutateConfigFile(configPath); err != nil {
+		if err := cmconfig.ApplyDefaultOverrides(); err != nil {
 			fmt.Fprintf(stderr, "Error: failed to initialize configuration: %v\n", err)
 			return cmrunner.ExitError
 		}

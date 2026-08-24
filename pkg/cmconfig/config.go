@@ -33,9 +33,19 @@ type Config struct {
 	path string
 }
 
-// LoadConfig reads and parses a YAML configuration file from path into a Config object.
+// LoadConfig reads and parses the CodeMender configuration file from DefaultConfigPath().
 // Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
-func LoadConfig(path string) (*Config, error) {
+func LoadConfig() (*Config, error) {
+	path, err := DefaultConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	return LoadConfigFile(path)
+}
+
+// LoadConfigFile reads and parses a YAML configuration file from the specified path.
+// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
+func LoadConfigFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
@@ -105,24 +115,13 @@ func (c *Config) ApplyOverrides(overrides map[string]any) error {
 	return nil
 }
 
-// ApplyDefaultOverrides applies DefaultOverrides to the config AST in-place.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func (c *Config) ApplyDefaultOverrides() error {
-	return c.ApplyOverrides(DefaultOverrides)
-}
-
-// AppendScanExtension appends ext to scan.extensions.include idempotently.
+// AppendExtension appends ext to scan.extensions.include idempotently.
+// It guarantees that duplicate extension entries are not added if already present.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func (c *Config) AppendScanExtension(ext string) error {
+func (c *Config) AppendExtension(ext string) error {
 	return c.ApplyOverrides(map[string]any{
 		"scan.extensions.include": []string{ext},
 	})
-}
-
-// EnsureDiffExtension ensures that ".diff" is registered in scan.extensions.include.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func (c *Config) EnsureDiffExtension() error {
-	return c.AppendScanExtension(".diff")
 }
 
 // Bytes serializes the mutated YAML document back to formatted bytes.
@@ -140,16 +139,17 @@ func (c *Config) Bytes() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Write writes the serialized YAML document back to disk.
-// If an explicit targetPath is provided, it writes to targetPath; otherwise, it writes to c.path.
+// Write writes the serialized YAML document back to disk at the config's path.
+// If the config was not loaded from a file, it writes to DefaultConfigPath().
 // Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
-func (c *Config) Write(targetPath ...string) error {
+func (c *Config) Write() error {
 	dest := c.path
-	if len(targetPath) > 0 && strings.TrimSpace(targetPath[0]) != "" {
-		dest = strings.TrimSpace(targetPath[0])
-	}
 	if dest == "" {
-		return errors.New("target path is empty and Config was not loaded from file")
+		defaultPath, err := DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		dest = defaultPath
 	}
 
 	data, err := c.Bytes()
@@ -174,10 +174,10 @@ func (c *Config) Path() string {
 	return c.path
 }
 
-// ApplyOverrides loads a configuration file from path, applies overrides in-place, and writes it back.
+// ApplyOverrides loads the default CodeMender configuration file, applies overrides in-place, and writes it back.
 // Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
-func ApplyOverrides(path string, overrides map[string]any) error {
-	cfg, err := LoadConfig(path)
+func ApplyOverrides(overrides map[string]any) error {
+	cfg, err := LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -187,80 +187,10 @@ func ApplyOverrides(path string, overrides map[string]any) error {
 	return cfg.Write()
 }
 
-// ApplyDefaultOverrides loads a configuration file, applies DefaultOverrides in-place, and writes it back.
-// If path is omitted, DefaultConfigPath() is used.
+// ApplyDefaultOverrides loads the default CodeMender configuration file, applies DefaultOverrides in-place, and writes it back.
 // Governing: REQ-0002, SPEC-cm-batch-runner
-func ApplyDefaultOverrides(path ...string) error {
-	targetPath := ""
-	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
-		targetPath = strings.TrimSpace(path[0])
-	} else {
-		defaultPath, err := DefaultConfigPath()
-		if err != nil {
-			return err
-		}
-		targetPath = defaultPath
-	}
-	return ApplyOverrides(targetPath, DefaultOverrides)
-}
-
-// EnsureDiffExtension ensures that ".diff" is registered in scan.extensions.include.
-// If path is specified, that configuration file is mutated; otherwise DefaultConfigPath() is used.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func EnsureDiffExtension(path ...string) error {
-	targetPath := ""
-	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
-		targetPath = strings.TrimSpace(path[0])
-	} else {
-		defaultPath, err := DefaultConfigPath()
-		if err != nil {
-			return err
-		}
-		targetPath = defaultPath
-	}
-	return AppendScanExtension(targetPath, ".diff")
-}
-
-// AppendScanExtension reads the configuration file at path, appends ext to scan.extensions.include
-// idempotently, and writes the updated content back to the file.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func AppendScanExtension(path string, ext string) error {
-	return ApplyOverrides(path, map[string]any{
-		"scan.extensions.include": []string{ext},
-	})
-}
-
-// MutateConfig takes a raw YAML byte slice and applies DefaultOverrides in-place.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfig(yamlBytes []byte) ([]byte, error) {
-	cfg, err := ParseConfig(yamlBytes)
-	if err != nil {
-		return nil, err
-	}
-	if err := cfg.ApplyDefaultOverrides(); err != nil {
-		return nil, err
-	}
-	return cfg.Bytes()
-}
-
-// MutateConfigWithOverrides takes a raw YAML byte slice and applies the given overrides in-place.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfigWithOverrides(yamlBytes []byte, overrides map[string]any) ([]byte, error) {
-	cfg, err := ParseConfig(yamlBytes)
-	if err != nil {
-		return nil, err
-	}
-	if err := cfg.ApplyOverrides(overrides); err != nil {
-		return nil, err
-	}
-	return cfg.Bytes()
-}
-
-// MutateConfigFile reads a YAML configuration file from path, mutates it in-place using DefaultOverrides,
-// and writes the updated content back to the file.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfigFile(path string) error {
-	return ApplyDefaultOverrides(path)
+func ApplyDefaultOverrides() error {
+	return ApplyOverrides(DefaultOverrides)
 }
 
 // DefaultConfigPath returns the default CodeMender configuration file path

@@ -32,471 +32,8 @@ tools:
   timeout_seconds: 300
 `
 
-func TestMutateConfig_ValidConfig(t *testing.T) {
-	mutated, err := MutateConfig([]byte(sampleValidConfig))
-	if err != nil {
-		t.Fatalf("unexpected error mutating config: %v", err)
-	}
-
-	var parsed struct {
-		Version string `yaml:"version"`
-		Server  struct {
-			Host string `yaml:"host"`
-			Port int    `yaml:"port"`
-		} `yaml:"server"`
-		Scan struct {
-			MaxFileSizeKb int `yaml:"max_file_size_kb"`
-			Extensions    struct {
-				Include []string `yaml:"include"`
-				Exclude []string `yaml:"exclude"`
-			} `yaml:"extensions"`
-		} `yaml:"scan"`
-		Output struct {
-			Format string `yaml:"format"`
-			Color  bool   `yaml:"color"`
-		} `yaml:"output"`
-		Tools struct {
-			ConfirmCommands bool `yaml:"confirm_commands"`
-			ConfirmWrites   bool `yaml:"confirm_writes"`
-			TimeoutSeconds  int  `yaml:"timeout_seconds"`
-		} `yaml:"tools"`
-	}
-
-	if err := yaml.Unmarshal(mutated, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal mutated YAML: %v", err)
-	}
-
-	// Verify scan.extensions.include contains .rs
-	foundRS := false
-	for _, ext := range parsed.Scan.Extensions.Include {
-		if ext == ".rs" {
-			foundRS = true
-			break
-		}
-	}
-	if !foundRS {
-		t.Errorf("expected .rs to be in scan.extensions.include, got %v", parsed.Scan.Extensions.Include)
-	}
-
-	// Verify original extensions preserved
-	expectedIncludes := []string{".go", ".py", ".js", ".rs"}
-	if len(parsed.Scan.Extensions.Include) != len(expectedIncludes) {
-		t.Errorf("expected %d includes, got %d: %v", len(expectedIncludes), len(parsed.Scan.Extensions.Include), parsed.Scan.Extensions.Include)
-	}
-
-	// Verify output.format set to json
-	if parsed.Output.Format != "json" {
-		t.Errorf("expected output.format to be 'json', got %q", parsed.Output.Format)
-	}
-
-	// Verify tools.confirm_commands set to false
-	if parsed.Tools.ConfirmCommands {
-		t.Errorf("expected tools.confirm_commands to be false, got true")
-	}
-
-	// Verify tools.confirm_writes set to false
-	if parsed.Tools.ConfirmWrites {
-		t.Errorf("expected tools.confirm_writes to be false, got true")
-	}
-
-	// Verify unmanaged keys preserved
-	if parsed.Version != "1.0" {
-		t.Errorf("expected version '1.0', got %q", parsed.Version)
-	}
-	if parsed.Server.Port != 8080 {
-		t.Errorf("expected server.port 8080, got %d", parsed.Server.Port)
-	}
-	if parsed.Scan.MaxFileSizeKb != 1024 {
-		t.Errorf("expected scan.max_file_size_kb 1024, got %d", parsed.Scan.MaxFileSizeKb)
-	}
-	if parsed.Tools.TimeoutSeconds != 300 {
-		t.Errorf("expected tools.timeout_seconds 300, got %d", parsed.Tools.TimeoutSeconds)
-	}
-
-	// Verify comments preserved in mutated YAML string
-	mutatedStr := string(mutated)
-	if !strings.Contains(mutatedStr, "# CodeMender Default Configuration") {
-		t.Errorf("expected comments to be preserved in mutated output, got:\n%s", mutatedStr)
-	}
-}
-
-func TestMutateConfig_Idempotence(t *testing.T) {
-	configWithRS := `
-scan:
-  extensions:
-    include:
-      - ".go"
-      - ".rs"
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`
-	mutated, err := MutateConfig([]byte(configWithRS))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Second mutation should not duplicate .rs
-	mutatedAgain, err := MutateConfig(mutated)
-	if err != nil {
-		t.Fatalf("unexpected error on second mutation: %v", err)
-	}
-
-	var parsed struct {
-		Scan struct {
-			Extensions struct {
-				Include []string `yaml:"include"`
-			} `yaml:"extensions"`
-		} `yaml:"scan"`
-	}
-
-	if err := yaml.Unmarshal(mutatedAgain, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	rsCount := 0
-	for _, ext := range parsed.Scan.Extensions.Include {
-		if ext == ".rs" {
-			rsCount++
-		}
-	}
-	if rsCount != 1 {
-		t.Errorf("expected exactly 1 instance of .rs in scan.extensions.include, got %d: %v", rsCount, parsed.Scan.Extensions.Include)
-	}
-}
-
-func TestMutateConfig_MissingCriticalKeys(t *testing.T) {
-	tests := []struct {
-		name        string
-		inputYAML   string
-		expectedErr string
-	}{
-		{
-			name: "missing scan.extensions.include",
-			inputYAML: `
-scan:
-  max_file_size_kb: 1024
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`,
-			expectedErr: "scan.extensions.include",
-		},
-		{
-			name: "missing output.format",
-			inputYAML: `
-scan:
-  extensions:
-    include:
-      - ".go"
-output:
-  color: true
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`,
-			expectedErr: "output.format",
-		},
-		{
-			name: "missing tools.confirm_commands",
-			inputYAML: `
-scan:
-  extensions:
-    include:
-      - ".go"
-output:
-  format: "table"
-tools:
-  confirm_writes: true
-`,
-			expectedErr: "tools.confirm_commands",
-		},
-		{
-			name: "missing tools.confirm_writes",
-			inputYAML: `
-scan:
-  extensions:
-    include:
-      - ".go"
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-`,
-			expectedErr: "tools.confirm_writes",
-		},
-		{
-			name: "missing top-level tools section entirely",
-			inputYAML: `
-scan:
-  extensions:
-    include:
-      - ".go"
-output:
-  format: "table"
-`,
-			expectedErr: "tools.confirm_commands",
-		},
-		{
-			name: "scan.extensions.include is not a sequence",
-			inputYAML: `
-scan:
-  extensions:
-    include: ".go"
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`,
-			expectedErr: "scan.extensions.include",
-		},
-		{
-			name:        "empty YAML document",
-			inputYAML:   ``,
-			expectedErr: "empty",
-		},
-		{
-			name: "malformed YAML document",
-			inputYAML: `
-scan: [invalid yaml {
-`,
-			expectedErr: "yaml",
-		},
-		{
-			name: "non-mapping root node",
-			inputYAML: `- item1
-- item2
-`,
-			expectedErr: "mapping",
-		},
-		{
-			name: "scan is a scalar instead of mapping",
-			inputYAML: `
-scan: "not-a-map"
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`,
-			expectedErr: "not a mapping node",
-		},
-		{
-			name: "scan.extensions is a scalar instead of mapping",
-			inputYAML: `
-scan:
-  extensions: "not-a-map"
-output:
-  format: "table"
-tools:
-  confirm_commands: true
-  confirm_writes: true
-`,
-			expectedErr: "not a mapping node",
-		},
-		{
-			name: "document only comment or null",
-			inputYAML: `
-# only comment
-`,
-			expectedErr: "empty",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := MutateConfig([]byte(tc.inputYAML))
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.expectedErr)
-			}
-			if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.expectedErr)) {
-				t.Errorf("expected error message to contain %q, got: %q", tc.expectedErr, err.Error())
-			}
-		})
-	}
-}
-
-func TestMutateConfigFile(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-
-	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
-
-	if err := MutateConfigFile(configPath); err != nil {
-		t.Fatalf("unexpected error mutating file: %v", err)
-	}
-
-	mutatedContent, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read mutated file: %v", err)
-	}
-
-	mutatedStr := string(mutatedContent)
-	if !strings.Contains(mutatedStr, `format: "json"`) && !strings.Contains(mutatedStr, `format: json`) {
-		t.Errorf("expected mutated file to contain format: json, got:\n%s", mutatedStr)
-	}
-	if !strings.Contains(mutatedStr, ".rs") {
-		t.Errorf("expected mutated file to contain .rs, got:\n%s", mutatedStr)
-	}
-	if !strings.Contains(mutatedStr, "confirm_commands: false") {
-		t.Errorf("expected mutated file to contain confirm_commands: false, got:\n%s", mutatedStr)
-	}
-	if !strings.Contains(mutatedStr, "confirm_writes: false") {
-		t.Errorf("expected mutated file to contain confirm_writes: false, got:\n%s", mutatedStr)
-	}
-}
-
-func TestMutateConfigFile_Errors(t *testing.T) {
-	t.Run("non-existent file", func(t *testing.T) {
-		err := MutateConfigFile("/non/existent/path/config.yaml")
-		if err == nil {
-			t.Errorf("expected error for non-existent file, got nil")
-		}
-	})
-
-	t.Run("invalid YAML file", func(t *testing.T) {
-		tempDir := t.TempDir()
-		badPath := filepath.Join(tempDir, "bad.yaml")
-		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
-			t.Fatalf("failed to write bad file: %v", err)
-		}
-		err := MutateConfigFile(badPath)
-		if err == nil {
-			t.Errorf("expected error for invalid YAML file, got nil")
-		}
-	})
-}
-
-func TestMutateConfigWithOverrides(t *testing.T) {
-	customConfig := `
-server:
-  port: 8080
-scan:
-  timeout: 10
-  extensions:
-    include:
-      - ".go"
-`
-	overrides := map[string]any{
-		"server.port":             9090,
-		"scan.timeout":            60,
-		"scan.extensions.include": []string{".py", ".rs"},
-	}
-
-	mutated, err := MutateConfigWithOverrides([]byte(customConfig), overrides)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var parsed struct {
-		Server struct {
-			Port int `yaml:"port"`
-		} `yaml:"server"`
-		Scan struct {
-			Timeout    int `yaml:"timeout"`
-			Extensions struct {
-				Include []string `yaml:"include"`
-			} `yaml:"extensions"`
-		} `yaml:"scan"`
-	}
-
-	if err := yaml.Unmarshal(mutated, &parsed); err != nil {
-		t.Fatalf("failed to unmarshal mutated YAML: %v", err)
-	}
-
-	if parsed.Server.Port != 9090 {
-		t.Errorf("expected server.port 9090, got %d", parsed.Server.Port)
-	}
-	if parsed.Scan.Timeout != 60 {
-		t.Errorf("expected scan.timeout 60, got %d", parsed.Scan.Timeout)
-	}
-	expectedIncludes := []string{".go", ".py", ".rs"}
-	if len(parsed.Scan.Extensions.Include) != len(expectedIncludes) {
-		t.Errorf("expected %d includes, got %v", len(expectedIncludes), parsed.Scan.Extensions.Include)
-	}
-
-	t.Run("unsupported type error", func(t *testing.T) {
-		badOverrides := map[string]any{
-			"server.port": struct{}{},
-		}
-		_, err := MutateConfigWithOverrides([]byte(customConfig), badOverrides)
-		if err == nil {
-			t.Errorf("expected error for unsupported override value type, got nil")
-		}
-	})
-}
-
-func TestDefaultConfigPath(t *testing.T) {
-	// Test DefaultConfigPath with HOME set
-	origHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", origHome)
-
-	os.Setenv("HOME", "/custom/home")
-	path, err := DefaultConfigPath()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	expected := filepath.Join("/custom/home", ".codemender", "config.yaml")
-	if path != expected {
-		t.Errorf("expected %q, got %q", expected, path)
-	}
-
-	// Test with HOME unset
-	os.Unsetenv("HOME")
-	_, err = DefaultConfigPath()
-	if err == nil {
-		t.Errorf("expected error when HOME is unset, got nil")
-	}
-}
-
-func TestEnsureDiffExtension(t *testing.T) {
-	t.Run("mutates file at explicit path", func(t *testing.T) {
-		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-			t.Fatalf("failed to write test config: %v", err)
-		}
-
-		if err := EnsureDiffExtension(configPath); err != nil {
-			t.Fatalf("unexpected error from EnsureDiffExtension: %v", err)
-		}
-
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			t.Fatalf("failed to read mutated config: %v", err)
-		}
-
-		var parsed struct {
-			Scan struct {
-				Extensions struct {
-					Include []string `yaml:"include"`
-				} `yaml:"extensions"`
-			} `yaml:"scan"`
-		}
-		if err := yaml.Unmarshal(data, &parsed); err != nil {
-			t.Fatalf("failed to unmarshal YAML: %v", err)
-		}
-
-		foundDiff := false
-		for _, ext := range parsed.Scan.Extensions.Include {
-			if ext == ".diff" {
-				foundDiff = true
-				break
-			}
-		}
-		if !foundDiff {
-			t.Errorf("expected .diff in scan.extensions.include, got %v", parsed.Scan.Extensions.Include)
-		}
-	})
-
-	t.Run("uses DefaultConfigPath when path omitted", func(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
+	t.Run("loads from DefaultConfigPath", func(t *testing.T) {
 		tempDir := t.TempDir()
 		origHome := os.Getenv("HOME")
 		defer os.Setenv("HOME", origHome)
@@ -504,44 +41,258 @@ func TestEnsureDiffExtension(t *testing.T) {
 
 		cmDir := filepath.Join(tempDir, ".codemender")
 		if err := os.MkdirAll(cmDir, 0o755); err != nil {
-			t.Fatalf("failed to create .codemender dir: %v", err)
+			t.Fatalf("failed to create dir: %v", err)
 		}
 		configPath := filepath.Join(cmDir, "config.yaml")
 		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
 			t.Fatalf("failed to write test config: %v", err)
 		}
 
-		if err := EnsureDiffExtension(); err != nil {
-			t.Fatalf("unexpected error from EnsureDiffExtension(): %v", err)
-		}
-
-		data, err := os.ReadFile(configPath)
+		cfg, err := LoadConfig()
 		if err != nil {
-			t.Fatalf("failed to read mutated config: %v", err)
+			t.Fatalf("unexpected LoadConfig error: %v", err)
 		}
-
-		if !strings.Contains(string(data), ".diff") {
-			t.Errorf("expected mutated config to contain .diff, got:\n%s", string(data))
+		if cfg.Path() != configPath {
+			t.Errorf("expected path %q, got %q", configPath, cfg.Path())
 		}
 	})
 
-	t.Run("idempotent when .diff already present", func(t *testing.T) {
+	t.Run("returns error when HOME is unset", func(t *testing.T) {
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Unsetenv("HOME")
+
+		_, err := LoadConfig()
+		if err == nil {
+			t.Errorf("expected error when HOME is unset, got nil")
+		}
+	})
+}
+
+func TestLoadConfigFile(t *testing.T) {
+	t.Run("loads from explicit path", func(t *testing.T) {
 		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, "config.yaml")
+		configPath := filepath.Join(tempDir, "custom_config.yaml")
 		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
 			t.Fatalf("failed to write test config: %v", err)
 		}
 
-		if err := EnsureDiffExtension(configPath); err != nil {
-			t.Fatalf("unexpected first EnsureDiffExtension error: %v", err)
+		cfg, err := LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
 		}
-		if err := EnsureDiffExtension(configPath); err != nil {
-			t.Fatalf("unexpected second EnsureDiffExtension error: %v", err)
+		if cfg.Path() != configPath {
+			t.Errorf("expected path %q, got %q", configPath, cfg.Path())
+		}
+	})
+
+	t.Run("error on non-existent file", func(t *testing.T) {
+		_, err := LoadConfigFile("/non/existent/path/config.yaml")
+		if err == nil {
+			t.Errorf("expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("error on invalid YAML file", func(t *testing.T) {
+		tempDir := t.TempDir()
+		badPath := filepath.Join(tempDir, "bad.yaml")
+		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
+			t.Fatalf("failed to write bad file: %v", err)
+		}
+		_, err := LoadConfigFile(badPath)
+		if err == nil {
+			t.Errorf("expected error for invalid YAML, got nil")
+		}
+	})
+}
+
+func TestParseConfig(t *testing.T) {
+	t.Run("valid YAML bytes", func(t *testing.T) {
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		if err != nil {
+			t.Fatalf("unexpected ParseConfig error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected non-nil Config")
+		}
+	})
+
+	t.Run("empty YAML bytes", func(t *testing.T) {
+		_, err := ParseConfig([]byte(""))
+		if err == nil {
+			t.Errorf("expected error for empty YAML, got nil")
+		}
+	})
+
+	t.Run("malformed YAML bytes", func(t *testing.T) {
+		_, err := ParseConfig([]byte("scan: [broken"))
+		if err == nil {
+			t.Errorf("expected error for malformed YAML, got nil")
+		}
+	})
+
+	t.Run("non-mapping root node", func(t *testing.T) {
+		_, err := ParseConfig([]byte("- item1\n- item2\n"))
+		if err == nil {
+			t.Errorf("expected error for sequence root node, got nil")
+		}
+	})
+}
+
+func TestConfig_ApplyOverrides(t *testing.T) {
+	t.Run("applies scalar and sequence overrides", func(t *testing.T) {
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
 
-		data, err := os.ReadFile(configPath)
+		err = cfg.ApplyOverrides(map[string]any{
+			"server.port":             9090,
+			"scan.max_file_size_kb":   2048,
+			"scan.extensions.include": []string{".rs", ".diff"},
+			"output.format":           "json",
+			"tools.confirm_commands":  false,
+		})
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
+			t.Fatalf("unexpected ApplyOverrides error: %v", err)
+		}
+
+		bytesOut, err := cfg.Bytes()
+		if err != nil {
+			t.Fatalf("unexpected Bytes error: %v", err)
+		}
+
+		var parsed struct {
+			Server struct {
+				Port int `yaml:"port"`
+			} `yaml:"server"`
+			Scan struct {
+				MaxFileSizeKb int `yaml:"max_file_size_kb"`
+				Extensions    struct {
+					Include []string `yaml:"include"`
+				} `yaml:"extensions"`
+			} `yaml:"scan"`
+			Output struct {
+				Format string `yaml:"format"`
+			} `yaml:"output"`
+			Tools struct {
+				ConfirmCommands bool `yaml:"confirm_commands"`
+			} `yaml:"tools"`
+		}
+
+		if err := yaml.Unmarshal(bytesOut, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal output: %v", err)
+		}
+
+		if parsed.Server.Port != 9090 {
+			t.Errorf("expected port 9090, got %d", parsed.Server.Port)
+		}
+		if parsed.Scan.MaxFileSizeKb != 2048 {
+			t.Errorf("expected max_file_size_kb 2048, got %d", parsed.Scan.MaxFileSizeKb)
+		}
+		if parsed.Output.Format != "json" {
+			t.Errorf("expected format 'json', got %q", parsed.Output.Format)
+		}
+		if parsed.Tools.ConfirmCommands {
+			t.Errorf("expected confirm_commands false, got true")
+		}
+
+		// Verify extension list
+		expectedExtensions := []string{".go", ".py", ".js", ".rs", ".diff"}
+		if len(parsed.Scan.Extensions.Include) != len(expectedExtensions) {
+			t.Errorf("expected extensions %v, got %v", expectedExtensions, parsed.Scan.Extensions.Include)
+		}
+	})
+
+	t.Run("fails on missing critical keys", func(t *testing.T) {
+		invalidYAML := `
+scan:
+  max_file_size_kb: 1024
+`
+		cfg, err := ParseConfig([]byte(invalidYAML))
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+
+		err = cfg.ApplyOverrides(map[string]any{
+			"scan.extensions.include": []string{".rs"},
+		})
+		if err == nil {
+			t.Errorf("expected error for missing key, got nil")
+		}
+	})
+
+	t.Run("fails on non-sequence key for slice override", func(t *testing.T) {
+		scalarYAML := `
+scan:
+  extensions:
+    include: ".go"
+`
+		cfg, err := ParseConfig([]byte(scalarYAML))
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+
+		err = cfg.ApplyOverrides(map[string]any{
+			"scan.extensions.include": []string{".rs"},
+		})
+		if err == nil {
+			t.Errorf("expected error when target is not a sequence, got nil")
+		}
+	})
+
+	t.Run("fails on intermediate non-mapping node", func(t *testing.T) {
+		badYAML := `
+scan: "not-a-map"
+`
+		cfg, err := ParseConfig([]byte(badYAML))
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+
+		err = cfg.ApplyOverrides(map[string]any{
+			"scan.extensions.include": []string{".rs"},
+		})
+		if err == nil {
+			t.Errorf("expected error for non-mapping intermediate segment, got nil")
+		}
+	})
+
+	t.Run("fails on unsupported type", func(t *testing.T) {
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		if err != nil {
+			t.Fatalf("unexpected parse error: %v", err)
+		}
+
+		err = cfg.ApplyOverrides(map[string]any{
+			"server.port": struct{}{},
+		})
+		if err == nil {
+			t.Errorf("expected error for unsupported type, got nil")
+		}
+	})
+}
+
+func TestConfig_AppendExtension(t *testing.T) {
+	t.Run("appends extension and enforces idempotency", func(t *testing.T) {
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// First append
+		if err := cfg.AppendExtension(".diff"); err != nil {
+			t.Fatalf("unexpected first AppendExtension error: %v", err)
+		}
+
+		// Second append (must be idempotent - no duplicate)
+		if err := cfg.AppendExtension(".diff"); err != nil {
+			t.Fatalf("unexpected second AppendExtension error: %v", err)
+		}
+
+		bytesOut, err := cfg.Bytes()
+		if err != nil {
+			t.Fatalf("unexpected Bytes error: %v", err)
 		}
 
 		var parsed struct {
@@ -551,7 +302,7 @@ func TestEnsureDiffExtension(t *testing.T) {
 				} `yaml:"extensions"`
 			} `yaml:"scan"`
 		}
-		if err := yaml.Unmarshal(data, &parsed); err != nil {
+		if err := yaml.Unmarshal(bytesOut, &parsed); err != nil {
 			t.Fatalf("failed to unmarshal: %v", err)
 		}
 
@@ -565,214 +316,39 @@ func TestEnsureDiffExtension(t *testing.T) {
 			t.Errorf("expected exactly 1 instance of .diff, got %d in %v", diffCount, parsed.Scan.Extensions.Include)
 		}
 	})
-
-	t.Run("returns error on missing HOME when path omitted", func(t *testing.T) {
-		origHome := os.Getenv("HOME")
-		defer os.Setenv("HOME", origHome)
-		os.Unsetenv("HOME")
-
-		err := EnsureDiffExtension()
-		if err == nil {
-			t.Errorf("expected error when HOME unset and path omitted, got nil")
-		}
-	})
 }
 
-func TestAppendScanExtension(t *testing.T) {
-	t.Run("appends custom extension to config file", func(t *testing.T) {
+func TestConfig_Write(t *testing.T) {
+	t.Run("writes back to loaded file path", func(t *testing.T) {
 		tempDir := t.TempDir()
 		configPath := filepath.Join(tempDir, "config.yaml")
 		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
 			t.Fatalf("failed to write test config: %v", err)
 		}
 
-		if err := AppendScanExtension(configPath, ".patch"); err != nil {
-			t.Fatalf("unexpected error from AppendScanExtension: %v", err)
-		}
-
-		data, err := os.ReadFile(configPath)
+		cfg, err := LoadConfigFile(configPath)
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
 		}
 
-		if !strings.Contains(string(data), ".patch") {
-			t.Errorf("expected config to contain .patch, got:\n%s", string(data))
-		}
-	})
-
-	t.Run("errors on non-existent file", func(t *testing.T) {
-		err := AppendScanExtension("/non/existent/path/config.yaml", ".diff")
-		if err == nil {
-			t.Errorf("expected error for non-existent file, got nil")
-		}
-	})
-
-	t.Run("errors on invalid yaml file", func(t *testing.T) {
-		tempDir := t.TempDir()
-		badPath := filepath.Join(tempDir, "bad.yaml")
-		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
-			t.Fatalf("failed to write bad file: %v", err)
-		}
-		err := AppendScanExtension(badPath, ".diff")
-		if err == nil {
-			t.Errorf("expected error for invalid YAML file, got nil")
-		}
-	})
-}
-
-func TestConfig_ObjectMethods(t *testing.T) {
-	t.Run("LoadConfig and Config methods workflow", func(t *testing.T) {
-		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-			t.Fatalf("failed to write test config: %v", err)
+		if err := cfg.AppendExtension(".diff"); err != nil {
+			t.Fatalf("unexpected AppendExtension error: %v", err)
 		}
 
-		cfg, err := LoadConfig(configPath)
-		if err != nil {
-			t.Fatalf("unexpected LoadConfig error: %v", err)
-		}
-
-		if cfg.Path() != configPath {
-			t.Errorf("expected path %q, got %q", configPath, cfg.Path())
-		}
-
-		// Apply custom overrides
-		if err := cfg.ApplyOverrides(map[string]any{
-			"server.port": 9000,
-		}); err != nil {
-			t.Fatalf("unexpected ApplyOverrides error: %v", err)
-		}
-
-		// Ensure .diff extension
-		if err := cfg.EnsureDiffExtension(); err != nil {
-			t.Fatalf("unexpected EnsureDiffExtension error: %v", err)
-		}
-
-		// Append another extension
-		if err := cfg.AppendScanExtension(".patch"); err != nil {
-			t.Fatalf("unexpected AppendScanExtension error: %v", err)
-		}
-
-		// Apply default overrides
-		if err := cfg.ApplyDefaultOverrides(); err != nil {
-			t.Fatalf("unexpected ApplyDefaultOverrides error: %v", err)
-		}
-
-		// Serialize to bytes
-		bytesOut, err := cfg.Bytes()
-		if err != nil {
-			t.Fatalf("unexpected Bytes error: %v", err)
-		}
-		if !strings.Contains(string(bytesOut), ".diff") || !strings.Contains(string(bytesOut), ".patch") {
-			t.Errorf("expected output to contain extensions, got:\n%s", string(bytesOut))
-		}
-
-		// Write to same file
 		if err := cfg.Write(); err != nil {
 			t.Fatalf("unexpected Write error: %v", err)
 		}
 
-		// Write to alternate file
-		altPath := filepath.Join(tempDir, "alt_config.yaml")
-		if err := cfg.Write(altPath); err != nil {
-			t.Fatalf("unexpected Write to alt path error: %v", err)
-		}
-		if cfg.Path() != altPath {
-			t.Errorf("expected path %q, got %q", altPath, cfg.Path())
-		}
-
-		altData, err := os.ReadFile(altPath)
-		if err != nil {
-			t.Fatalf("failed to read alt config: %v", err)
-		}
-		if !strings.Contains(string(altData), "port: 9000") {
-			t.Errorf("expected alt config to contain port: 9000, got:\n%s", string(altData))
-		}
-	})
-
-	t.Run("LoadConfig error on non-existent file", func(t *testing.T) {
-		_, err := LoadConfig("/non/existent/path/config.yaml")
-		if err == nil {
-			t.Errorf("expected error for non-existent file, got nil")
-		}
-	})
-
-	t.Run("LoadConfig error on invalid YAML", func(t *testing.T) {
-		tempDir := t.TempDir()
-		badPath := filepath.Join(tempDir, "bad.yaml")
-		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
-			t.Fatalf("failed to write bad file: %v", err)
-		}
-		_, err := LoadConfig(badPath)
-		if err == nil {
-			t.Errorf("expected error for invalid YAML file, got nil")
-		}
-	})
-
-	t.Run("Write error on empty path", func(t *testing.T) {
-		cfg, err := ParseConfig([]byte(sampleValidConfig))
-		if err != nil {
-			t.Fatalf("unexpected ParseConfig error: %v", err)
-		}
-		if err := cfg.Write(); err == nil {
-			t.Errorf("expected error writing Config with empty path, got nil")
-		}
-	})
-}
-
-func TestApplyOverrides_TopLevelFunction(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-		t.Fatalf("failed to write test config: %v", err)
-	}
-
-	err := ApplyOverrides(configPath, map[string]any{
-		"server.port": 7070,
-	})
-	if err != nil {
-		t.Fatalf("unexpected ApplyOverrides error: %v", err)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read updated config: %v", err)
-	}
-	if !strings.Contains(string(data), "port: 7070") {
-		t.Errorf("expected config to contain port: 7070, got:\n%s", string(data))
-	}
-
-	t.Run("non-existent file error", func(t *testing.T) {
-		err := ApplyOverrides("/non/existent/config.yaml", map[string]any{"server.port": 7070})
-		if err == nil {
-			t.Errorf("expected error for non-existent file, got nil")
-		}
-	})
-}
-
-func TestApplyDefaultOverrides_TopLevelFunction(t *testing.T) {
-	t.Run("with explicit path", func(t *testing.T) {
-		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-			t.Fatalf("failed to write test config: %v", err)
-		}
-
-		if err := ApplyDefaultOverrides(configPath); err != nil {
-			t.Fatalf("unexpected ApplyDefaultOverrides error: %v", err)
-		}
-
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
+			t.Fatalf("failed to read back config: %v", err)
 		}
-		if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
-			t.Errorf("expected config to contain format: json, got:\n%s", string(data))
+		if !strings.Contains(string(data), ".diff") {
+			t.Errorf("expected file to contain .diff, got:\n%s", string(data))
 		}
 	})
 
-	t.Run("with default path", func(t *testing.T) {
+	t.Run("writes to DefaultConfigPath when path is empty", func(t *testing.T) {
 		tempDir := t.TempDir()
 		origHome := os.Getenv("HOME")
 		defer os.Setenv("HOME", origHome)
@@ -780,33 +356,105 @@ func TestApplyDefaultOverrides_TopLevelFunction(t *testing.T) {
 
 		cmDir := filepath.Join(tempDir, ".codemender")
 		if err := os.MkdirAll(cmDir, 0o755); err != nil {
-			t.Fatalf("failed to create .codemender dir: %v", err)
-		}
-		configPath := filepath.Join(cmDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
-			t.Fatalf("failed to write test config: %v", err)
+			t.Fatalf("failed to create dir: %v", err)
 		}
 
-		if err := ApplyDefaultOverrides(); err != nil {
-			t.Fatalf("unexpected ApplyDefaultOverrides() error: %v", err)
-		}
-
-		data, err := os.ReadFile(configPath)
+		cfg, err := ParseConfig([]byte(sampleValidConfig))
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
+			t.Fatalf("unexpected ParseConfig error: %v", err)
 		}
-		if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
-			t.Errorf("expected config to contain format: json, got:\n%s", string(data))
+
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		expectedPath := filepath.Join(cmDir, "config.yaml")
+		if _, err := os.Stat(expectedPath); err != nil {
+			t.Errorf("expected config file at %q: %v", expectedPath, err)
 		}
 	})
+}
 
-	t.Run("error when HOME is unset and path omitted", func(t *testing.T) {
-		origHome := os.Getenv("HOME")
-		defer os.Setenv("HOME", origHome)
-		os.Unsetenv("HOME")
+func TestApplyOverrides_TopLevel(t *testing.T) {
+	tempDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tempDir)
 
-		if err := ApplyDefaultOverrides(); err == nil {
-			t.Errorf("expected error when HOME unset and path omitted, got nil")
-		}
+	cmDir := filepath.Join(tempDir, ".codemender")
+	if err := os.MkdirAll(cmDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	configPath := filepath.Join(cmDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	err := ApplyOverrides(map[string]any{
+		"server.port": 9090,
 	})
+	if err != nil {
+		t.Fatalf("unexpected ApplyOverrides error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read back config: %v", err)
+	}
+	if !strings.Contains(string(data), "port: 9090") {
+		t.Errorf("expected file to contain port: 9090, got:\n%s", string(data))
+	}
+}
+
+func TestApplyDefaultOverrides_TopLevel(t *testing.T) {
+	tempDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tempDir)
+
+	cmDir := filepath.Join(tempDir, ".codemender")
+	if err := os.MkdirAll(cmDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	configPath := filepath.Join(cmDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	err := ApplyDefaultOverrides()
+	if err != nil {
+		t.Fatalf("unexpected ApplyDefaultOverrides error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read back config: %v", err)
+	}
+	if !strings.Contains(string(data), ".rs") {
+		t.Errorf("expected file to contain .rs, got:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
+		t.Errorf("expected file to contain format: json, got:\n%s", string(data))
+	}
+}
+
+func TestDefaultConfigPath(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	os.Setenv("HOME", "/test/home")
+	path, err := DefaultConfigPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := filepath.Join("/test/home", ".codemender", "config.yaml")
+	if path != expected {
+		t.Errorf("expected %q, got %q", expected, path)
+	}
+
+	os.Unsetenv("HOME")
+	_, err = DefaultConfigPath()
+	if err == nil {
+		t.Errorf("expected error when HOME unset, got nil")
+	}
 }
