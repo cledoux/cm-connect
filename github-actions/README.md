@@ -211,11 +211,22 @@ target repository:
 This copies `workflows/codemender.yml` into `.github/workflows/codemender.yml`
 in the target repository.
 
-### Step 2: Provision GCP WIF & IAM via Helper Script
+### Step 2: Provision GCP WIF & IAM via Terraform (Recommended) or Helper Script
 
-Run the automated `setup-wif.sh` helper script with `gcloud` credentials to
-provision the Workload Identity Pool, Provider, Service Account, and IAM
-bindings:
+#### Option A: Declarative Terraform Module (Recommended)
+
+Use the provided Terraform module in `github-actions/terraform/`:
+
+```bash
+cd github-actions/terraform
+terraform init
+terraform apply -var="project_id=my-gcp-project" -var="github_repo=my-org/my-target-repo"
+```
+
+#### Option B: Automated CLI Helper Script
+
+Alternatively, run the automated `setup-wif.sh` helper script with `gcloud`
+credentials:
 
 ```bash
 # Run WIF automated setup script:
@@ -227,22 +238,24 @@ bindings:
   --service-account="codemender-runner"
 ```
 
-The script outputs the values for `GCP_WIF_PROVIDER` and `GCP_SERVICE_ACCOUNT`.
+Both options output the exact values for `GCP_WIF_PROVIDER` and
+`GCP_SERVICE_ACCOUNT`.
 
 ### Step 3: Add GitHub Repository Secrets
 
-Add the values returned by `setup-wif.sh` to your target GitHub repository:
+Add the values returned by Terraform or `setup-wif.sh` to your target GitHub
+repository:
 
 1. Navigate to **Settings > Secrets and variables > Actions**.
-1. Click **New repository secret**.
-1. Create `GCP_WIF_PROVIDER` with the provider resource name.
-1. Create `GCP_SERVICE_ACCOUNT` with the service account email.
+2. Click **New repository secret**.
+3. Create `GCP_WIF_PROVIDER` with the provider resource name.
+4. Create `GCP_SERVICE_ACCOUNT` with the service account email.
 
 ### Step 4: Verify on Pull Request
 
 1. Create a feature branch and commit changes.
-1. Open a pull request targeting `main`.
-1. Verify that the `scan` job triggers, evaluates `commit.diff`, and launches
+2. Open a pull request targeting `main`.
+3. Verify that the `scan` job triggers, evaluates `commit.diff`, and launches
    parallel `fix` matrix jobs to post inline suggestions when findings occur.
 
 ______________________________________________________________________
@@ -253,8 +266,16 @@ ______________________________________________________________________
 github-actions/
 ├── README.md               # Quickstart onboarding and configuration guide
 ├── scripts/
+│   ├── filter_findings.jq  # jq filter for diff-scoped matrix partitioning
 │   ├── install.sh          # One-command installer copying workflow to target repo
-│   └── setup-wif.sh        # GCP IAM & Workload Identity Federation configuration script
+│   ├── publish_comments.py # PR inline suggestion and fallback comment publisher
+│   └── setup-wif.sh        # GCP IAM & WIF automated CLI setup script
+├── terraform/              # Declarative GCP WIF & IAM Terraform module
+│   ├── main.tf             # WIF pool, provider, SA, and IAM member resources
+│   ├── outputs.tf          # Output values for GitHub secrets
+│   ├── variables.tf        # Configurable variables (project_id, github_repo, etc.)
+│   ├── versions.tf         # Terraform and Google provider version constraints
+│   └── README.md           # Terraform usage guide
 └── workflows/
     └── codemender.yml      # Standalone GitHub Actions workflow template
 ```
@@ -262,3 +283,4 @@ github-actions/
 > **Note on Repository Isolation:** All workflow files are maintained under
 > `github-actions/` rather than `.github/` to prevent unintentional automated CI
 > execution on `cm-connect`.
+

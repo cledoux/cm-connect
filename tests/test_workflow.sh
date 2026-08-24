@@ -126,6 +126,62 @@ test_setup_wif_script() {
      echo \"\$out\" | grep -q 'GCP_SERVICE_ACCOUNT: codemender-runner@my-proj.iam.gserviceaccount.com'"
 }
 
+test_terraform_module() {
+  echo -e "\n${BLUE}========================================${NC}"
+  echo -e "${BLUE} Suite: Workload Identity Federation Terraform Module${NC}"
+  echo -e "${BLUE}========================================${NC}"
+
+  local tf_dir="${REPO_ROOT}/github-actions/terraform"
+
+  # 1. Module directory and file existence
+  run_test "Terraform directory exists" \
+    "[ -d '${tf_dir}' ]"
+
+  run_test "Terraform main.tf exists and is non-empty" \
+    "[ -s '${tf_dir}/main.tf' ]"
+
+  run_test "Terraform variables.tf exists and is non-empty" \
+    "[ -s '${tf_dir}/variables.tf' ]"
+
+  run_test "Terraform outputs.tf exists and is non-empty" \
+    "[ -s '${tf_dir}/outputs.tf' ]"
+
+  run_test "Terraform versions.tf exists and is non-empty" \
+    "[ -s '${tf_dir}/versions.tf' ]"
+
+  run_test "Terraform README.md exists and is non-empty" \
+    "[ -s '${tf_dir}/README.md' ]"
+
+  # 2. Key resources in main.tf
+  run_test "main.tf defines google_iam_workload_identity_pool" \
+    "grep -q 'resource \"google_iam_workload_identity_pool\" \"pool\"' '${tf_dir}/main.tf'"
+
+  run_test "main.tf defines google_iam_workload_identity_pool_provider with OIDC" \
+    "grep -q 'resource \"google_iam_workload_identity_pool_provider\" \"provider\"' '${tf_dir}/main.tf' && \
+     grep -q 'https://token.actions.githubusercontent.com' '${tf_dir}/main.tf' && \
+     grep -q '\"google.subject\"' '${tf_dir}/main.tf' && \
+     grep -q '\"attribute.repository\"' '${tf_dir}/main.tf'"
+
+  run_test "main.tf defines google_service_account" \
+    "grep -q 'resource \"google_service_account\" \"runner\"' '${tf_dir}/main.tf'"
+
+  run_test "main.tf defines roles/aiplatform.user binding" \
+    "grep -q 'resource \"google_project_iam_member\" \"aiplatform_user\"' '${tf_dir}/main.tf' && \
+     grep -q 'roles/aiplatform.user' '${tf_dir}/main.tf'"
+
+  run_test "main.tf defines roles/iam.workloadIdentityUser principalSet binding" \
+    "grep -q 'resource \"google_service_account_iam_member\" \"wif_user\"' '${tf_dir}/main.tf' && \
+     grep -q 'roles/iam.workloadIdentityUser' '${tf_dir}/main.tf' && \
+     grep -q 'principalSet://iam.googleapis.com/' '${tf_dir}/main.tf'"
+
+  # 3. Outputs export
+  run_test "outputs.tf exports gcp_wif_provider" \
+    "grep -q 'output \"gcp_wif_provider\"' '${tf_dir}/outputs.tf'"
+
+  run_test "outputs.tf exports gcp_service_account" \
+    "grep -q 'output \"gcp_service_account\"' '${tf_dir}/outputs.tf'"
+}
+
 TARGET_TEST="all"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -145,6 +201,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: $0 [--test=<name>|--all]"
       echo "Supported tests:"
       echo "  setup_wif_script  - Test Google Cloud WIF setup helper script"
+      echo "  terraform_module  - Test Google Cloud WIF Terraform module"
       echo "  all               - Run all test suites"
       exit 0
       ;;
@@ -159,8 +216,12 @@ case "${TARGET_TEST}" in
   setup_wif_script)
     test_setup_wif_script
     ;;
+  terraform_module)
+    test_terraform_module
+    ;;
   all)
     test_setup_wif_script
+    test_terraform_module
     ;;
   *)
     echo "Unknown test target: ${TARGET_TEST}" >&2
@@ -176,3 +237,4 @@ if [ "${FAILED_TESTS}" -gt 0 ]; then
   exit 1
 fi
 exit 0
+
