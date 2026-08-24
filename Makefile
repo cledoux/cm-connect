@@ -45,8 +45,7 @@ rebuild: clean lint ## Clean and rebuild the CodeMender batch runner Docker imag
 integration-test: ## Run full container verification test suite in Go with timeout
 	go test -tags=integration -v -timeout=3m ./tests/integration/...
 
-test-workflow: ## Run full GitHub Actions workflow test suite and integration tests
-	./tests/test_workflow.sh --all
+test-workflow: ## Run full GitHub Actions workflow Go integration test suite
 	go test -tags=integration -v -timeout=3m ./tests/integration/workflow_*.go ./tests/integration/helper_test.go
 
 clean: ## Remove Docker image and clean local artifacts
