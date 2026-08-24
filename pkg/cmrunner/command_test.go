@@ -413,4 +413,3 @@ func TestNewFindDiffCommand(t *testing.T) {
 		}
 	})
 }
-

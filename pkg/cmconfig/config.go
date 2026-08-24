@@ -213,7 +213,6 @@ func MutateConfigFileWithOverrides(path string, overrides map[string]any) error 
 	return nil
 }
 
-
 // DefaultConfigPath returns the default CodeMender configuration file path
 // ($HOME/.codemender/config.yaml).
 // Governing: REQ-0002, SPEC-cm-batch-runner
@@ -270,4 +269,3 @@ func EnsureDiffExtension(path ...string) error {
 	}
 	return AppendScanExtension(targetPath, ".diff")
 }
-

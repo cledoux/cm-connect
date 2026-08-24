@@ -44,7 +44,6 @@ var (
 	errPathTraversal     = errors.New("scan target path escapes workspace boundary")
 )
 
-
 // partitionDash splits raw arguments into tokens before '--' and tokens after '--'.
 // Governing: ADR-0002, SPEC-cm-batch-runner, REQ-0006
 func partitionDash(args []string) (beforeDash, afterDash []string) {
@@ -261,7 +260,6 @@ func parseArgs(workspaceRoot string, rawArgs []string, stdin ...io.Reader) (Disp
 		return DispatchPlan{}, fmt.Errorf("%w '%s'", errInvalidSubcommand, subcommand)
 	}
 }
-
 
 func parseFixArgs(workspaceRoot string, args []string, stdin io.Reader) (DispatchPlan, error) {
 	beforeDash, afterDash := partitionDash(args)
