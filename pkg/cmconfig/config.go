@@ -24,6 +24,176 @@ var DefaultOverrides = map[string]any{
 	"tools.confirm_writes":    false,
 }
 
+// Config represents a CodeMender configuration document loaded in memory.
+// It wraps a yaml.Node AST document tree to preserve comments, indentation,
+// and unmanaged upstream fields during mutations.
+// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
+type Config struct {
+	root yaml.Node
+	path string
+}
+
+// LoadConfig reads and parses the CodeMender configuration file from DefaultConfigPath().
+// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
+func LoadConfig() (*Config, error) {
+	path, err := DefaultConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	return LoadConfigFile(path)
+}
+
+// LoadConfigFile reads and parses a YAML configuration file from the specified path.
+// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner
+func LoadConfigFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %q: %w", path, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, errors.New("empty YAML document")
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("failed to parse config file %q: %w", path, err)
+	}
+
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil, errors.New("invalid or empty YAML document root")
+	}
+	if root.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("root node is not a mapping (got kind %v)", root.Content[0].Kind)
+	}
+
+	return &Config{root: root, path: path}, nil
+}
+
+// ApplyOverrides applies a dictionary of key-path to value mappings to the YAML AST in-place.
+// Scalar values overwrite the target node, while slice values append elements idempotently.
+// If any critical key path is missing or relocated, it fails fast and returns an error.
+// Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
+func (c *Config) ApplyOverrides(overrides map[string]any) error {
+	if c.root.Kind != yaml.DocumentNode || len(c.root.Content) == 0 {
+		return errors.New("invalid or empty YAML document root")
+	}
+
+	rootMapping := c.root.Content[0]
+	if rootMapping.Kind != yaml.MappingNode {
+		return fmt.Errorf("root node is not a mapping (got kind %v)", rootMapping.Kind)
+	}
+
+	// Iterate deterministically by sorting keys
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, path := range keys {
+		val := overrides[path]
+		node, err := lookupPath(rootMapping, path)
+		if err != nil {
+			return err
+		}
+		if err := applyValue(node, path, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AppendExtension appends ext to scan.extensions.include idempotently.
+// It guarantees that duplicate extension entries are not added if already present.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func (c *Config) AppendExtension(ext string) error {
+	return c.ApplyOverrides(map[string]any{
+		"scan.extensions.include": []string{ext},
+	})
+}
+
+// bytes serializes the mutated YAML document back to formatted bytes.
+// Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
+func (c *Config) bytes() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&c.root); err != nil {
+		return nil, fmt.Errorf("failed to encode mutated YAML: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("failed to finalize YAML encoder: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// Write writes the serialized YAML document back to disk at the config's path.
+// If the config was not loaded from a file, it writes to DefaultConfigPath().
+// Note: Write is not thread-safe and does not verify that the on-disk file remains
+// unchanged since LoadConfig or LoadConfigFile was called.
+// Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
+func (c *Config) Write() error {
+	dest := c.path
+	if dest == "" {
+		defaultPath, err := DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		dest = defaultPath
+	}
+
+	data, err := c.bytes()
+	if err != nil {
+		return err
+	}
+
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(dest); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	if err := os.WriteFile(dest, data, perm); err != nil {
+		return fmt.Errorf("failed to write mutated config to %q: %w", dest, err)
+	}
+	c.path = dest
+	return nil
+}
+
+// Path returns the file path associated with the loaded Config, if any.
+func (c *Config) Path() string {
+	return c.path
+}
+
+// ApplyOverrides loads the default CodeMender configuration file, applies overrides in-place, and writes it back.
+// Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
+func ApplyOverrides(overrides map[string]any) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if err := cfg.ApplyOverrides(overrides); err != nil {
+		return err
+	}
+	return cfg.Write()
+}
+
+// ApplyDefaultOverrides loads the default CodeMender configuration file, applies DefaultOverrides in-place, and writes it back.
+// Governing: REQ-0002, SPEC-cm-batch-runner
+func ApplyDefaultOverrides() error {
+	return ApplyOverrides(DefaultOverrides)
+}
+
+// DefaultConfigPath returns the default CodeMender configuration file path
+// ($HOME/.codemender/config.yaml).
+// Governing: REQ-0002, SPEC-cm-batch-runner
+func DefaultConfigPath() (string, error) {
+	home := os.Getenv("HOME")
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("HOME environment variable is not set")
+	}
+	return filepath.Join(home, ".codemender", "config.yaml"), nil
+}
+
 // findMappingChild searches a MappingNode for a child value node matching key.
 func findMappingChild(mappingNode *yaml.Node, key string) (*yaml.Node, error) {
 	if mappingNode.Kind != yaml.MappingNode {
@@ -109,163 +279,4 @@ func applyValue(node *yaml.Node, path string, val any) error {
 		return fmt.Errorf("unsupported override value type %T for key %q", val, path)
 	}
 	return nil
-}
-
-// ApplyOverrides applies a dictionary of key-path to value mappings to the YAML AST.
-// For each key-value pair, it traverses to the target node and updates it in-place.
-// If any key does not exist in the document, it fails fast and returns an error.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func ApplyOverrides(root *yaml.Node, overrides map[string]any) error {
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return errors.New("invalid or empty YAML document root")
-	}
-
-	rootMapping := root.Content[0]
-	if rootMapping.Kind != yaml.MappingNode {
-		return fmt.Errorf("root node is not a mapping (got kind %v)", rootMapping.Kind)
-	}
-
-	// Iterate deterministically by sorting keys
-	keys := make([]string, 0, len(overrides))
-	for k := range overrides {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, path := range keys {
-		val := overrides[path]
-		node, err := lookupPath(rootMapping, path)
-		if err != nil {
-			return err
-		}
-		if err := applyValue(node, path, val); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// MutateConfig takes a raw YAML byte slice and applies DefaultOverrides in-place.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfig(yamlBytes []byte) ([]byte, error) {
-	return MutateConfigWithOverrides(yamlBytes, DefaultOverrides)
-}
-
-// MutateConfigWithOverrides takes a raw YAML byte slice and applies the given overrides in-place.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfigWithOverrides(yamlBytes []byte, overrides map[string]any) ([]byte, error) {
-	if len(bytes.TrimSpace(yamlBytes)) == 0 {
-		return nil, errors.New("empty YAML document")
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(yamlBytes, &root); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML document: %w", err)
-	}
-
-	if err := ApplyOverrides(&root, overrides); err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return nil, fmt.Errorf("failed to encode mutated YAML: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("failed to finalize YAML encoder: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// MutateConfigFile reads a YAML configuration file from path, mutates it in-place using DefaultOverrides,
-// and writes the updated content back to the file.
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func MutateConfigFile(path string) error {
-	return MutateConfigFileWithOverrides(path, DefaultOverrides)
-}
-
-// MutateConfigFileWithOverrides reads a YAML configuration file from path, mutates it in-place using
-// the provided overrides, and writes the updated content back to the file.
-// Governing: REQ-0002, REQ-0014, SPEC-cm-batch-runner, ADR-0007
-func MutateConfigFileWithOverrides(path string, overrides map[string]any) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("failed to inspect config file %q: %w", path, err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read config file %q: %w", path, err)
-	}
-
-	mutated, err := MutateConfigWithOverrides(data, overrides)
-	if err != nil {
-		return fmt.Errorf("failed to mutate config file %q: %w", path, err)
-	}
-
-	if err := os.WriteFile(path, mutated, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("failed to write mutated config to %q: %w", path, err)
-	}
-
-	return nil
-}
-
-// DefaultConfigPath returns the default CodeMender configuration file path
-// ($HOME/.codemender/config.yaml).
-// Governing: REQ-0002, SPEC-cm-batch-runner
-func DefaultConfigPath() (string, error) {
-	home := os.Getenv("HOME")
-	if strings.TrimSpace(home) == "" {
-		return "", errors.New("HOME environment variable is not set")
-	}
-	return filepath.Join(home, ".codemender", "config.yaml"), nil
-}
-
-// AppendScanExtension reads the configuration file at path, appends ext to scan.extensions.include
-// idempotently, and writes the updated content back to the file.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func AppendScanExtension(path string, ext string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("failed to inspect config file %q: %w", path, err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read config file %q: %w", path, err)
-	}
-
-	overrides := map[string]any{
-		"scan.extensions.include": []string{ext},
-	}
-	mutated, err := MutateConfigWithOverrides(data, overrides)
-	if err != nil {
-		return fmt.Errorf("failed to mutate config file %q: %w", path, err)
-	}
-
-	if err := os.WriteFile(path, mutated, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("failed to write mutated config to %q: %w", path, err)
-	}
-
-	return nil
-}
-
-// EnsureDiffExtension ensures that ".diff" is registered in scan.extensions.include.
-// If path is specified, that configuration file is mutated; otherwise DefaultConfigPath() is used.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func EnsureDiffExtension(path ...string) error {
-	targetPath := ""
-	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
-		targetPath = strings.TrimSpace(path[0])
-	} else {
-		defaultPath, err := DefaultConfigPath()
-		if err != nil {
-			return err
-		}
-		targetPath = defaultPath
-	}
-	return AppendScanExtension(targetPath, ".diff")
 }

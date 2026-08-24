@@ -78,7 +78,16 @@ var execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byt
 // runFindDiff executes the diff-scoped scanning workflow.
 // Governing: ADR-0007, REQ-0014, SPEC-cm-batch-runner
 func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
-	if err := cmconfig.EnsureDiffExtension(); err != nil {
+	cfg, err := cmconfig.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
+	if err := cfg.AppendExtension(".diff"); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
+	if err := cfg.Write(); err != nil {
 		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
 		return cmrunner.ExitError
 	}
@@ -134,12 +143,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		return cmrunner.ExitClean
 
 	case ActionInit:
-		configPath, err := cmconfig.DefaultConfigPath()
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: failed to determine default config path: %v\n", err)
-			return cmrunner.ExitError
-		}
-		if err := cmconfig.MutateConfigFile(configPath); err != nil {
+		if err := cmconfig.ApplyDefaultOverrides(); err != nil {
 			fmt.Fprintf(stderr, "Error: failed to initialize configuration: %v\n", err)
 			return cmrunner.ExitError
 		}

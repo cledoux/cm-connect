@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // getSetupWifScriptPath returns the absolute path to github-actions/scripts/setup-wif.sh.
