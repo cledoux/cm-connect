@@ -68,6 +68,30 @@ func TestInstallerScriptSuccess(t *testing.T) {
 			sourceRel: filepath.Join("github-actions", "scripts", "publish_comments.py"),
 			targetRel: filepath.Join(".github", "scripts", "publish_comments.py"),
 		},
+		{
+			sourceRel: filepath.Join("github-actions", "scripts", "setup-wif.sh"),
+			targetRel: filepath.Join(".github", "scripts", "setup-wif.sh"),
+		},
+		{
+			sourceRel: filepath.Join("github-actions", "terraform", "main.tf"),
+			targetRel: filepath.Join(".github", "terraform", "main.tf"),
+		},
+		{
+			sourceRel: filepath.Join("github-actions", "terraform", "variables.tf"),
+			targetRel: filepath.Join(".github", "terraform", "variables.tf"),
+		},
+		{
+			sourceRel: filepath.Join("github-actions", "terraform", "outputs.tf"),
+			targetRel: filepath.Join(".github", "terraform", "outputs.tf"),
+		},
+		{
+			sourceRel: filepath.Join("github-actions", "terraform", "versions.tf"),
+			targetRel: filepath.Join(".github", "terraform", "versions.tf"),
+		},
+		{
+			sourceRel: filepath.Join("github-actions", "terraform", "README.md"),
+			targetRel: filepath.Join(".github", "terraform", "README.md"),
+		},
 	}
 
 	for _, ef := range expectedFiles {
