@@ -1,7 +1,10 @@
 # Filter CodeMender findings against pull request commit.diff and construct dynamic matrix.
 #
 # Usage:
+#   # With explicit diff file (legacy/external):
 #   jq --rawfile diff commit.diff [--argjson max_findings 10] -f github-actions/scripts/filter_findings.jq findings.json
+#   # With native find-diff payload (diff filtering already applied):
+#   jq [--argjson max_findings 10] -f github-actions/scripts/filter_findings.jq findings.json
 
 def severity_rank:
   (if type == "string" then ascii_upcase else "" end) as $s |
@@ -38,7 +41,8 @@ def parse_diff($diff_text):
     )
   | .ranges;
 
-parse_diff($diff // "") as $ranges
+($ARGS.named.diff // null) as $raw_diff
+| (if $raw_diff != null then parse_diff($raw_diff) else null end) as $ranges
 | (if . == null then [] else . end)
 | map(
     . as $finding
@@ -46,11 +50,15 @@ parse_diff($diff // "") as $ranges
     | ($finding.StartLine // $finding.line // 1) as $f_start
     | ($finding.EndLine // $finding.end_line // $f_start) as $f_end
     | select(
-        $ranges | any(
-          .file == $fp and
-          $f_start <= .end and
-          $f_end >= .start
-        )
+        if $ranges == null then
+          true
+        else
+          $ranges | any(
+            .file == $fp and
+            $f_start <= .end and
+            $f_end >= .start
+          )
+        end
       )
   )
 | sort_by(-((.Severity // .severity // "") | severity_rank))
