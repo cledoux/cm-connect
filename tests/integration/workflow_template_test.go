@@ -158,7 +158,7 @@ func TestWorkflow_TriggerAndPermissions(t *testing.T) {
 	}
 }
 
-// TestWorkflow_ScanJobDefinition verifies the scan job steps, exit code trapping, and matrix emission (REQ-0001..REQ-0004).
+// TestWorkflow_ScanJobDefinition verifies the scan job steps, native find-diff execution, exit code trapping, and matrix emission (REQ-0001..REQ-0004, REQ-WF.1, REQ-WF.2).
 func TestWorkflow_ScanJobDefinition(t *testing.T) {
 	doc, raw := loadWorkflowTemplate(t)
 
@@ -180,7 +180,8 @@ func TestWorkflow_ScanJobDefinition(t *testing.T) {
 	}
 
 	// Step checks
-	var hasCheckout, hasDiffExtract, hasWIFAuth, hasScanRun, hasMatrixGen bool
+	var hasCheckout, hasWIFAuth, hasScanRun, hasMatrixGen bool
+	var hasDiffExtract bool
 	for _, step := range scanJob.Steps {
 		if strings.HasPrefix(step.Uses, "actions/checkout@v4") {
 			hasCheckout = true
@@ -188,12 +189,8 @@ func TestWorkflow_ScanJobDefinition(t *testing.T) {
 				t.Errorf("scan checkout step fetch-depth = %q, want '0'", step.With["fetch-depth"])
 			}
 		}
-		if strings.Contains(step.Run, "git diff") && strings.Contains(step.Run, "commit.diff") {
+		if strings.Contains(step.Run, "commit.diff") {
 			hasDiffExtract = true
-			if !strings.Contains(step.Run, "github.event.pull_request.base.sha") ||
-				!strings.Contains(step.Run, "github.event.pull_request.head.sha") {
-				t.Errorf("diff extract step missing base.sha or head.sha reference: %s", step.Run)
-			}
 		}
 		if strings.HasPrefix(step.Uses, "google-github-actions/auth@v2") {
 			hasWIFAuth = true
@@ -204,8 +201,12 @@ func TestWorkflow_ScanJobDefinition(t *testing.T) {
 				t.Errorf("scan auth missing GCP_SERVICE_ACCOUNT secret: %v", step.With)
 			}
 		}
-		if strings.Contains(step.Run, "cm-runner") && strings.Contains(step.Run, "find") {
+		if strings.Contains(step.Run, "cm-runner") && strings.Contains(step.Run, "find-diff") {
 			hasScanRun = true
+			if !strings.Contains(step.Run, "github.event.pull_request.base.sha") ||
+				!strings.Contains(step.Run, "github.event.pull_request.head.sha") {
+				t.Errorf("scan find-diff missing base.sha or head.sha reference: %s", step.Run)
+			}
 			if !strings.Contains(step.Run, "-v \"$(pwd):/workspace\"") && !strings.Contains(step.Run, "-v \"$PWD:/workspace\"") {
 				t.Errorf("scan docker run missing workspace volume mount: %s", step.Run)
 			}
@@ -218,23 +219,20 @@ func TestWorkflow_ScanJobDefinition(t *testing.T) {
 		}
 		if strings.Contains(step.Run, "filter_findings.jq") {
 			hasMatrixGen = true
-			if !strings.Contains(step.Run, "--rawfile diff commit.diff") {
-				t.Errorf("matrix gen step missing --rawfile diff commit.diff: %s", step.Run)
-			}
 		}
 	}
 
 	if !hasCheckout {
 		t.Errorf("scan job missing actions/checkout@v4 step with fetch-depth: 0")
 	}
-	if !hasDiffExtract {
-		t.Errorf("scan job missing commit.diff extraction step")
+	if hasDiffExtract {
+		t.Errorf("scan job MUST NOT contain host-side commit.diff extraction step (REQ-WF.2)")
 	}
 	if !hasWIFAuth {
 		t.Errorf("scan job missing google-github-actions/auth@v2 step")
 	}
 	if !hasScanRun {
-		t.Errorf("scan job missing docker run cm-runner find step")
+		t.Errorf("scan job missing docker run cm-runner find-diff step (REQ-WF.1)")
 	}
 	if !hasMatrixGen {
 		t.Errorf("scan job missing filter_findings.jq matrix generation step")

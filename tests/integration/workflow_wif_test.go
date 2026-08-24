@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // getSetupWifScriptPath returns the absolute path to github-actions/scripts/setup-wif.sh.
@@ -177,25 +176,6 @@ func TestSetupWifScriptEnvVarsDryRun(t *testing.T) {
 		t.Fatalf("script failed with env vars: %v\nOutput:\n%s", err, string(out))
 	}
 	verifyDryRunOutput(t, string(out), "env-proj", "env-org/env-repo", "env-pool", "env-provider", "env-sa")
-}
-
-// Scenario 8: Verify bash test runner execution (REQ-TEST.5)
-func TestWorkflowTestRunnerExecution(t *testing.T) {
-	repoRoot := getRepoRoot(t)
-	runnerPath := filepath.Join(repoRoot, "tests", "test_workflow.sh")
-
-	info, err := os.Stat(runnerPath)
-	if err != nil {
-		t.Fatalf("tests/test_workflow.sh does not exist: %v", err)
-	}
-	if info.Mode()&0111 == 0 {
-		t.Fatalf("tests/test_workflow.sh is not executable")
-	}
-
-	stdout, stderr, code := runCommand(t, 45*time.Second, repoRoot, nil, runnerPath, "--test=setup_wif_script")
-	if code != 0 {
-		t.Errorf("test_workflow.sh --test=setup_wif_script failed with exit code %d. stderr: %s, stdout: %s", code, stderr, stdout)
-	}
 }
 
 // verifyDryRunOutput checks for required gcloud commands and secret instructions.

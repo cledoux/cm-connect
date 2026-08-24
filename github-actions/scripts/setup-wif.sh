@@ -146,7 +146,7 @@ fi
 # Resolve project number
 if [ -z "${PROJECT_NUM}" ]; then
   if [ "${DRY_RUN}" = "true" ] || [ "${DRY_RUN}" = "1" ]; then
-    PROJECT_NUM=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)' 2>/dev/null || echo "123456789012")
+    PROJECT_NUM="123456789012"
   else
     PROJECT_NUM=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
   fi

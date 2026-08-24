@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -31,34 +33,100 @@ var isTerminalFn = isTerminal
 var execShellFn = syscall.Exec
 
 // printUsage emits the standard usage reference guide to the given writer.
-// Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0002, REQ-0003
+// Governing: ADR-0001, ADR-0007, SPEC-cm-batch-runner, REQ-0002, REQ-0003, REQ-0014
 func printUsage(w io.Writer) {
 	usage := `CodeMender Runner (cm-runner) - Headless Container Entrypoint
 
 Usage:
   cm-runner find [path] [-- [flags]]          Run CodeMender vulnerability scan on full repo or sub-path
+  cm-runner find-diff [git-diff-args...] [-- [flags]] Run diff-scoped CodeMender vulnerability scan
   cm-runner fix <finding.json | -> [-- [flags]] Remediate finding and emit JSON change envelope to stdout
   cm-runner shell [path]                      Launch interactive /bin/bash shell in /workspace (requires -it)
   cm-runner init                              Pre-seed and apply headless configuration defaults in-place
 
 Arguments:
   [path]               For find/shell: Scans repository at /workspace (default: '.') or scoped sub-path.
+  [git-diff-args...]   For find-diff: Revisions, commit SHAs, or ranges forwarded to git diff (default: HEAD).
   <finding.json | ->   For fix: Path to finding JSON artifact, or '-' to read from standard input.
   [-- [flags...]]      Optional flags forwarded directly to CodeMender CLI.
-                       Emits structured JSON change envelope on stdout.
+                       Emits structured JSON findings or change envelope on stdout.
                        Diagnostics and progress logs are routed to stderr.
 
 Exit Codes:
-  0    Remediation succeeded / patch generated, clean scan, or init/help completed
+  0    Remediation succeeded / patch generated, clean scan, empty diff, or init/help completed
   1    Remediation unresolved / no patch generated, or findings detected
-  2    CLI usage error, invalid target, malformed finding JSON, or missing TTY on shell
+  2    CLI usage error, git diff error, invalid target, malformed finding JSON, or missing TTY on shell
   >2   Fatal tooling, execution, or authentication error
 `
 	fmt.Fprint(w, usage)
 }
 
+// execGitDiffFn executes git diff within the specified directory (pluggable for testing).
+var execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"diff"}, args...)...)
+	cmd.Dir = dir
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(errBuf.String()))
+	}
+	return outBuf.Bytes(), nil
+}
+
+// runFindDiff executes the diff-scoped scanning workflow.
+// Governing: ADR-0007, REQ-0014, SPEC-cm-batch-runner
+func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
+	cfg, err := cmconfig.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
+	if err := cfg.AppendExtension(".diff"); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
+	if err := cfg.Write(); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
+
+	diffBytes, err := execGitDiffFn(ctx, workspaceDir, plan.GitDiffArgs...)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: git diff failed: %v\nHint: Verify git revision syntax or configure fetch-depth: 0 in CI.\n", err)
+		return cmrunner.ExitUsage
+	}
+
+	if len(diffBytes) == 0 {
+		fmt.Fprintln(stdout, "[]")
+		return cmrunner.ExitClean
+	}
+
+	scratchPath := cmrunner.DefaultDiffPath
+	if err := os.WriteFile(scratchPath, diffBytes, 0o600); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %s: %v\n", scratchPath, err)
+		return cmrunner.ExitError
+	}
+	defer os.Remove(scratchPath)
+
+	findDiffCmd := cmrunner.NewFindDiffCommand(scratchPath)
+	findDiffCmd.Flags = plan.PassthroughFlags
+
+	reportCmd := cmrunner.NewReportCommand("json")
+
+	runner := cmrunner.NewRunner(
+		cmrunner.WithExecutable(cmPath),
+		cmrunner.WithWorkspace(workspaceDir),
+		cmrunner.WithGlobalFlags("--sandbox=false"),
+	)
+
+	code, _ := runner.RunSequence(ctx, []cmrunner.Command{findDiffCmd, reportCmd}, stdin, stdout, stderr)
+	return code
+}
+
 // run parses arguments and orchestrates execution of the target subcommand.
-// Governing: ADR-0001, ADR-0002, ADR-0005, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009, REQ-0010
+// Governing: ADR-0001, ADR-0002, ADR-0005, ADR-0007, SPEC-cm-batch-runner, SPEC-cm-fix-runner, REQ-0001, REQ-0002, REQ-0003, REQ-0005, REQ-0008, REQ-0009, REQ-0010, REQ-0014
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir, cmPath string) int {
 	plan, err := parseArgs(workspaceDir, args, stdin)
 	if err != nil {
@@ -66,6 +134,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 		printUsage(stderr)
 		return cmrunner.ExitUsage
 	}
+
+	ctx := context.Background()
 
 	switch plan.Action {
 	case ActionHelp:
@@ -108,9 +178,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workspaceDir,
 			cmrunner.WithGlobalFlags("--sandbox=false"),
 		)
 
-		ctx := context.Background()
 		code, _ := runner.RunSequence(ctx, plan.Commands, stdin, stdout, stderr)
 		return code
+
+	case ActionFindDiff:
+		return runFindDiff(ctx, plan, stdin, stdout, stderr, workspaceDir, cmPath)
 
 	case ActionFix:
 		runner := cmrunner.NewRunner(

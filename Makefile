@@ -1,4 +1,4 @@
-# Governing: REQ-0001, REQ-0006, REQ-0011
+# Governing: REQ-0001, REQ-0006, REQ-0008, REQ-0011
 
 IMAGE_NAME ?= cm-runner
 TAG ?= latest
@@ -7,7 +7,7 @@ TAG ?= latest
 USER_UID ?= $(shell id -u)
 USER_GID ?= $(shell id -g)
 
-.PHONY: help fmt lint test coverage build rebuild integration-test clean
+.PHONY: help fmt lint test coverage build rebuild integration-test test-workflow clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -44,6 +44,9 @@ rebuild: clean lint ## Clean and rebuild the CodeMender batch runner Docker imag
 
 integration-test: ## Run full container verification test suite in Go with timeout
 	go test -tags=integration -v -timeout=3m ./tests/integration/...
+
+test-workflow: ## Run full GitHub Actions workflow Go integration test suite
+	go test -tags=integration -v -timeout=3m ./tests/integration/workflow_*.go ./tests/integration/helper_test.go
 
 clean: ## Remove Docker image and clean local artifacts
 	docker rmi -f $(IMAGE_NAME):$(TAG) || true
