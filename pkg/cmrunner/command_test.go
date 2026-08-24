@@ -243,3 +243,174 @@ func TestNewImportCommand(t *testing.T) {
 		}
 	})
 }
+
+func TestConsolidateContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+	}{
+		{
+			name:     "nil flags produces default base context",
+			input:    nil,
+			expected: []string{"--context=" + BaseDiffContext},
+		},
+		{
+			name:     "empty flags produces default base context",
+			input:    []string{},
+			expected: []string{"--context=" + BaseDiffContext},
+		},
+		{
+			name:     "flags without context preserves flags and prepends base context",
+			input:    []string{"--model=gemini-1.5-pro", "--verbose"},
+			expected: []string{"--context=" + BaseDiffContext, "--model=gemini-1.5-pro", "--verbose"},
+		},
+		{
+			name:     "extracts -c with space and merges with base context",
+			input:    []string{"-c", "Focus on SQL injection", "--model=gemini"},
+			expected: []string{"--context=" + BaseDiffContext + " Focus on SQL injection", "--model=gemini"},
+		},
+		{
+			name:     "extracts -c with equal sign and merges with base context",
+			input:    []string{"-c=Focus on SQL injection", "--model=gemini"},
+			expected: []string{"--context=" + BaseDiffContext + " Focus on SQL injection", "--model=gemini"},
+		},
+		{
+			name:     "extracts --context with space and merges with base context",
+			input:    []string{"--context", "Check auth flaws", "--architecture=3-1"},
+			expected: []string{"--context=" + BaseDiffContext + " Check auth flaws", "--architecture=3-1"},
+		},
+		{
+			name:     "extracts --context with equal sign and merges with base context",
+			input:    []string{"--context=Check auth flaws", "--architecture=3-1"},
+			expected: []string{"--context=" + BaseDiffContext + " Check auth flaws", "--architecture=3-1"},
+		},
+		{
+			name:     "multiple context flags merged sequentially",
+			input:    []string{"-c", "Focus on auth", "--context=Check SQL injection"},
+			expected: []string{"--context=" + BaseDiffContext + " Focus on auth Check SQL injection"},
+		},
+		{
+			name:     "trailing -c flag without value is stripped",
+			input:    []string{"--model=gemini", "-c"},
+			expected: []string{"--context=" + BaseDiffContext, "--model=gemini"},
+		},
+		{
+			name:     "trailing --context flag without value is stripped",
+			input:    []string{"--model=gemini", "--context"},
+			expected: []string{"--context=" + BaseDiffContext, "--model=gemini"},
+		},
+		{
+			name:     "empty user context value does not add trailing whitespace",
+			input:    []string{"-c", "", "--model=gemini"},
+			expected: []string{"--context=" + BaseDiffContext, "--model=gemini"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ConsolidateContext(tc.input)
+			if !reflect.DeepEqual(result, tc.expected) {
+				t.Errorf("expected %v, got %v", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestNewFindDiffCommand(t *testing.T) {
+	tests := []struct {
+		name         string
+		diffPath     string
+		flags        []string
+		expectedCmd  []string
+		expectedPath string
+	}{
+		{
+			name:         "defaults diff path and injects -y and consolidated base context when empty",
+			diffPath:     "",
+			flags:        nil,
+			expectedCmd:  []string{"find", DefaultDiffPath, "-y", "--context=" + BaseDiffContext},
+			expectedPath: DefaultDiffPath,
+		},
+		{
+			name:         "preserves custom diff path and injects -y and base context",
+			diffPath:     "/workspace/custom.diff",
+			flags:        nil,
+			expectedCmd:  []string{"find", "/workspace/custom.diff", "-y", "--context=" + BaseDiffContext},
+			expectedPath: "/workspace/custom.diff",
+		},
+		{
+			name:         "consolidates user context and appends scan flags",
+			diffPath:     "/tmp/cm-diff.diff",
+			flags:        []string{"-c", "Focus on auth", "--model=gemini"},
+			expectedCmd:  []string{"find", "/tmp/cm-diff.diff", "-y", "--context=" + BaseDiffContext + " Focus on auth", "--model=gemini"},
+			expectedPath: "/tmp/cm-diff.diff",
+		},
+		{
+			name:         "does not duplicate -y when -y flag provided",
+			diffPath:     "/tmp/cm-diff.diff",
+			flags:        []string{"-y", "--model=gemini"},
+			expectedCmd:  []string{"find", "/tmp/cm-diff.diff", "-y", "--context=" + BaseDiffContext, "--model=gemini"},
+			expectedPath: "/tmp/cm-diff.diff",
+		},
+		{
+			name:         "does not duplicate -y when --yes flag provided",
+			diffPath:     "/tmp/cm-diff.diff",
+			flags:        []string{"--yes", "--model=gemini"},
+			expectedCmd:  []string{"find", "/tmp/cm-diff.diff", "--yes", "--context=" + BaseDiffContext, "--model=gemini"},
+			expectedPath: "/tmp/cm-diff.diff",
+		},
+		{
+			name:         "does not inject -y when help flag is requested",
+			diffPath:     "/tmp/cm-diff.diff",
+			flags:        []string{"--help"},
+			expectedCmd:  []string{"find", "/tmp/cm-diff.diff", "--help"},
+			expectedPath: "/tmp/cm-diff.diff",
+		},
+		{
+			name:         "does not inject -y when short help flag -h is requested",
+			diffPath:     "/tmp/cm-diff.diff",
+			flags:        []string{"-h"},
+			expectedCmd:  []string{"find", "/tmp/cm-diff.diff", "-h"},
+			expectedPath: "/tmp/cm-diff.diff",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewFindDiffCommand(tc.diffPath)
+			if cmd.DiffPath != tc.expectedPath {
+				t.Errorf("expected DiffPath %q, got %q", tc.expectedPath, cmd.DiffPath)
+			}
+			if len(tc.flags) > 0 {
+				leftover, err := cmd.SetArgs(tc.flags...)
+				if err != nil {
+					t.Fatalf("unexpected error from SetArgs: %v", err)
+				}
+				if len(leftover) != 0 {
+					t.Errorf("expected 0 leftover args, got %v", leftover)
+				}
+			}
+			if !reflect.DeepEqual(cmd.Cmd(), tc.expectedCmd) {
+				t.Errorf("expected Cmd() %v, got %v", tc.expectedCmd, cmd.Cmd())
+			}
+		})
+	}
+
+	t.Run("empty struct Cmd defaults", func(t *testing.T) {
+		cmd := &FindDiffCommand{}
+		expected := []string{"find", DefaultDiffPath, "-y", "--context=" + BaseDiffContext}
+		if !reflect.DeepEqual(cmd.Cmd(), expected) {
+			t.Errorf("expected %v, got %v", expected, cmd.Cmd())
+		}
+	})
+
+	t.Run("constructor with initial flags", func(t *testing.T) {
+		cmd := NewFindDiffCommand("/tmp/cm-diff.diff", "--model=gemini")
+		expected := []string{"find", "/tmp/cm-diff.diff", "-y", "--context=" + BaseDiffContext, "--model=gemini"}
+		if !reflect.DeepEqual(cmd.Cmd(), expected) {
+			t.Errorf("expected %v, got %v", expected, cmd.Cmd())
+		}
+	})
+}
+

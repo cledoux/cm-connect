@@ -216,3 +216,50 @@ func DefaultConfigPath() (string, error) {
 	}
 	return filepath.Join(home, ".codemender", "config.yaml"), nil
 }
+
+// AppendScanExtension reads the configuration file at path, appends ext to scan.extensions.include
+// idempotently, and writes the updated content back to the file.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func AppendScanExtension(path string, ext string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to inspect config file %q: %w", path, err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read config file %q: %w", path, err)
+	}
+
+	overrides := map[string]any{
+		"scan.extensions.include": []string{ext},
+	}
+	mutated, err := MutateConfigWithOverrides(data, overrides)
+	if err != nil {
+		return fmt.Errorf("failed to mutate config file %q: %w", path, err)
+	}
+
+	if err := os.WriteFile(path, mutated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("failed to write mutated config to %q: %w", path, err)
+	}
+
+	return nil
+}
+
+// EnsureDiffExtension ensures that ".diff" is registered in scan.extensions.include.
+// If path is specified, that configuration file is mutated; otherwise DefaultConfigPath() is used.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func EnsureDiffExtension(path ...string) error {
+	targetPath := ""
+	if len(path) > 0 && strings.TrimSpace(path[0]) != "" {
+		targetPath = strings.TrimSpace(path[0])
+	} else {
+		defaultPath, err := DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		targetPath = defaultPath
+	}
+	return AppendScanExtension(targetPath, ".diff")
+}
+

@@ -455,3 +455,168 @@ func TestDefaultConfigPath(t *testing.T) {
 		t.Errorf("expected error when HOME is unset, got nil")
 	}
 }
+
+func TestEnsureDiffExtension(t *testing.T) {
+	t.Run("mutates file at explicit path", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := EnsureDiffExtension(configPath); err != nil {
+			t.Fatalf("unexpected error from EnsureDiffExtension: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read mutated config: %v", err)
+		}
+
+		var parsed struct {
+			Scan struct {
+				Extensions struct {
+					Include []string `yaml:"include"`
+				} `yaml:"extensions"`
+			} `yaml:"scan"`
+		}
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal YAML: %v", err)
+		}
+
+		foundDiff := false
+		for _, ext := range parsed.Scan.Extensions.Include {
+			if ext == ".diff" {
+				foundDiff = true
+				break
+			}
+		}
+		if !foundDiff {
+			t.Errorf("expected .diff in scan.extensions.include, got %v", parsed.Scan.Extensions.Include)
+		}
+	})
+
+	t.Run("uses DefaultConfigPath when path omitted", func(t *testing.T) {
+		tempDir := t.TempDir()
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Setenv("HOME", tempDir)
+
+		cmDir := filepath.Join(tempDir, ".codemender")
+		if err := os.MkdirAll(cmDir, 0o755); err != nil {
+			t.Fatalf("failed to create .codemender dir: %v", err)
+		}
+		configPath := filepath.Join(cmDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := EnsureDiffExtension(); err != nil {
+			t.Fatalf("unexpected error from EnsureDiffExtension(): %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read mutated config: %v", err)
+		}
+
+		if !strings.Contains(string(data), ".diff") {
+			t.Errorf("expected mutated config to contain .diff, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("idempotent when .diff already present", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := EnsureDiffExtension(configPath); err != nil {
+			t.Fatalf("unexpected first EnsureDiffExtension error: %v", err)
+		}
+		if err := EnsureDiffExtension(configPath); err != nil {
+			t.Fatalf("unexpected second EnsureDiffExtension error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+
+		var parsed struct {
+			Scan struct {
+				Extensions struct {
+					Include []string `yaml:"include"`
+				} `yaml:"extensions"`
+			} `yaml:"scan"`
+		}
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		diffCount := 0
+		for _, ext := range parsed.Scan.Extensions.Include {
+			if ext == ".diff" {
+				diffCount++
+			}
+		}
+		if diffCount != 1 {
+			t.Errorf("expected exactly 1 instance of .diff, got %d in %v", diffCount, parsed.Scan.Extensions.Include)
+		}
+	})
+
+	t.Run("returns error on missing HOME when path omitted", func(t *testing.T) {
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Unsetenv("HOME")
+
+		err := EnsureDiffExtension()
+		if err == nil {
+			t.Errorf("expected error when HOME unset and path omitted, got nil")
+		}
+	})
+}
+
+func TestAppendScanExtension(t *testing.T) {
+	t.Run("appends custom extension to config file", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		if err := AppendScanExtension(configPath, ".patch"); err != nil {
+			t.Fatalf("unexpected error from AppendScanExtension: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+
+		if !strings.Contains(string(data), ".patch") {
+			t.Errorf("expected config to contain .patch, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("errors on non-existent file", func(t *testing.T) {
+		err := AppendScanExtension("/non/existent/path/config.yaml", ".diff")
+		if err == nil {
+			t.Errorf("expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("errors on invalid yaml file", func(t *testing.T) {
+		tempDir := t.TempDir()
+		badPath := filepath.Join(tempDir, "bad.yaml")
+		if err := os.WriteFile(badPath, []byte("scan: [invalid"), 0o600); err != nil {
+			t.Fatalf("failed to write bad file: %v", err)
+		}
+		err := AppendScanExtension(badPath, ".diff")
+		if err == nil {
+			t.Errorf("expected error for invalid YAML file, got nil")
+		}
+	})
+}
+

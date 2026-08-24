@@ -187,3 +187,133 @@ func (c *ImportCommand) Cmd() []string {
 	}
 	return []string{"report", "import", "-f", f, "-p", ws}
 }
+
+// DefaultDiffPath defines the standard ephemeral scratch path for git diff patches.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+const DefaultDiffPath = "/tmp/cm-diff.diff"
+
+// BaseDiffContext defines the default context prompt grounding CodeMender in diff scanning.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+const BaseDiffContext = "The target is a Git unified diff for this repository."
+
+// ConsolidateContext merges the base diff context prompt with any user-supplied
+// context flags (-c or --context), stripping standalone user context flags from the
+// remaining passthrough slice.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func ConsolidateContext(flags []string) []string {
+	var userContexts []string
+	var remaining []string
+
+	for i := 0; i < len(flags); i++ {
+		arg := flags[i]
+		if arg == "-c" || arg == "--context" {
+			if i+1 < len(flags) {
+				i++
+				val := strings.TrimSpace(flags[i])
+				if val != "" {
+					userContexts = append(userContexts, val)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-c=") {
+			val := strings.TrimSpace(strings.TrimPrefix(arg, "-c="))
+			if val != "" {
+				userContexts = append(userContexts, val)
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--context=") {
+			val := strings.TrimSpace(strings.TrimPrefix(arg, "--context="))
+			if val != "" {
+				userContexts = append(userContexts, val)
+			}
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
+
+	fullContext := BaseDiffContext
+	if len(userContexts) > 0 {
+		joined := strings.Join(userContexts, " ")
+		if joined != "" {
+			fullContext = fmt.Sprintf("%s %s", BaseDiffContext, joined)
+		}
+	}
+
+	result := make([]string, 0, 1+len(remaining))
+	result = append(result, fmt.Sprintf("--context=%s", fullContext))
+	result = append(result, remaining...)
+	return result
+}
+
+// FindDiffCommand encapsulates parameters for the 'cm find' diff scan phase.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+type FindDiffCommand struct {
+	DiffPath string
+	Flags    []string
+}
+
+// NewFindDiffCommand constructs a FindDiffCommand with a diff path (default: "/tmp/cm-diff.diff")
+// and optional initial scanner flags.
+func NewFindDiffCommand(diffPath string, flags ...string) *FindDiffCommand {
+	trimmed := strings.TrimSpace(diffPath)
+	if trimmed == "" {
+		trimmed = DefaultDiffPath
+	}
+	return &FindDiffCommand{
+		DiffPath: trimmed,
+		Flags:    flags,
+	}
+}
+
+// SetArgs sets unowned scanner flags for FindDiffCommand.
+func (c *FindDiffCommand) SetArgs(args ...string) ([]string, error) {
+	c.Flags = append(c.Flags, args...)
+	return nil, nil
+}
+
+// Cmd returns the complete command argument vector for 'cm find' against a diff patch.
+// Automatically injects -y (or preserves --yes) and the consolidated --context flag
+// unless --help or -h is requested.
+func (c *FindDiffCommand) Cmd() []string {
+	diffPath := c.DiffPath
+	if strings.TrimSpace(diffPath) == "" {
+		diffPath = DefaultDiffPath
+	}
+	args := []string{"find", diffPath}
+	if isHelpRequested(c.Flags) {
+		args = append(args, c.Flags...)
+		return args
+	}
+
+	yesFlag := "-y"
+	if hasExactFlag(c.Flags, "--yes") {
+		yesFlag = "--yes"
+	}
+	args = append(args, yesFlag)
+
+	filteredFlags := filterYesFlags(c.Flags)
+	args = append(args, ConsolidateContext(filteredFlags)...)
+	return args
+}
+
+func filterYesFlags(flags []string) []string {
+	var filtered []string
+	for _, f := range flags {
+		if f != "-y" && f != "--yes" {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
+}
+
+func hasExactFlag(flags []string, target string) bool {
+	for _, f := range flags {
+		if f == target {
+			return true
+		}
+	}
+	return false
+}
+
