@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0002.md
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
+  - adrs/ADR-0006.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Specification (`cm-pr-workflow`)
@@ -311,6 +312,11 @@ directory:
 - `github-actions/scripts/setup-wif.sh`: An executable helper script that runs
   `gcloud` commands to provision GCP Workload Identity Pool, Provider, Service
   Account, and IAM bindings.
+- `github-actions/scripts/filter_findings.jq`: Standalone jq filter generating
+  the dynamic fix matrix.
+- `github-actions/scripts/publish_comments.py`: Standalone Python 3 standard
+  library script translating ChangeEnvelope records into PR review suggestions
+  and handling diff-boundary fallbacks.
 - `github-actions/README.md`: Quickstart onboarding and configuration
   documentation.
 
@@ -334,3 +340,66 @@ repository during development.
 - **THEN** the workflow file MUST exist at
   `github-actions/workflows/codemender.yml` and
   `.github/workflows/codemender.yml` MUST NOT exist.
+
+______________________________________________________________________
+
+### REQ-TEST.2: PR Review Comment and Fallback Publisher Verification
+
+The test suite MUST verify the PR review comment publisher script
+(`github-actions/scripts/publish_comments.py`) across single-line suggestions,
+multi-line suggestions, HTTP 422 diff-boundary fallbacks, unresolved findings,
+step summary generation, and CLI execution interfaces.
+
+#### Scenario: Publish single-line review suggestion comment
+
+- **GIVEN** a `ChangeEnvelope` JSON fixture with a single-line hunk
+  (`change_envelope_single_line.json` with `start_line: 42, end_line: 42`)
+- **WHEN** `publish_comments.py` processes the envelope
+- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments` with
+  `path: "pkg/auth/store.go"`, `line: 42`, `side: "RIGHT"`, omitting
+  `start_line` and `start_side`, with a ```` ```suggestion ```` markdown body
+  containing the single-line replacement.
+
+#### Scenario: Publish multi-line review suggestion comment
+
+- **GIVEN** a `ChangeEnvelope` JSON fixture with a multi-line hunk
+  (`change_envelope_multiline.json` with `start_line: 42, end_line: 43`)
+- **WHEN** `publish_comments.py` processes the envelope
+- **THEN** it MUST invoke `POST /repos/{owner}/{repo}/pulls/{number}/comments` with
+  `path: "pkg/auth/store.go"`, `start_line: 42`, `line: 43`,
+  `start_side: "RIGHT"`, `side: "RIGHT"`, with a ```` ```suggestion ```` markdown
+  body containing the multi-line replacement.
+
+#### Scenario: Handle HTTP 422 error and fall back to top-level issue comment
+
+- **GIVEN** a `ChangeEnvelope` where review comment creation rejects with
+  HTTP 422 Unprocessable Entity (out of PR diff hunk)
+- **WHEN** `publish_comments.py` catches the HTTP 422 error
+- **THEN** it MUST NOT fail the step and MUST invoke
+  `POST /repos/{owner}/{repo}/issues/{number}/comments` with
+  `issue_number: <PR_NUMBER>` and a markdown body containing finding metadata
+  and the patch inside a ```` ```diff ```` block.
+
+#### Scenario: Handle unresolved finding without posting review comments
+
+- **GIVEN** a `ChangeEnvelope` JSON fixture with `status: "UNRESOLVED"` and
+  empty hunks (`change_envelope_unresolved.json`)
+- **WHEN** `publish_comments.py` processes the unresolved envelope
+- **THEN** it MUST NOT invoke review or issue comment APIs, and MUST log diagnostic
+  information and write the unresolved status to the step summary.
+
+#### Scenario: Generate GitHub Actions step summary
+
+- **GIVEN** an execution of `publish_comments.py` with `$GITHUB_STEP_SUMMARY` set
+  to a summary file path
+- **WHEN** `publish_comments.py` finishes processing the change envelope
+- **THEN** `$GITHUB_STEP_SUMMARY` MUST contain a markdown summary table or card
+  detailing the finding status, severity, title, and modified files.
+
+#### Scenario: Execute via CLI with zero external dependencies
+
+- **GIVEN** `publish_comments.py`
+- **WHEN** invoked via Python 3 standard library CLI (`python3 publish_comments.py <envelope.json>`)
+- **THEN** it MUST parse the change envelope and publish review comments, issue comments,
+  and step summaries without requiring third-party pip packages or Node.js runtimes.
+
