@@ -11,6 +11,7 @@ For architectural background and specification details, see:
 - [cm-pr-workflow Proposal](../openspec/proposals/cm-pr-workflow/proposal.md)
 - [ADR-0001: Headless Batch Scanner](../adrs/ADR-0001.md)
 - [ADR-0005: Stateless Fix Runner Protocol](../adrs/ADR-0005.md)
+- [ADR-0007: Native Diff-Aware Scanning Protocol (find-diff)](../adrs/ADR-0007.md)
 
 ______________________________________________________________________
 
@@ -28,17 +29,16 @@ flowchart TD
     subgraph ScanJob["2. Scan Job (runs-on: ubuntu-latest)"]
         direction TB
         Checkout["actions/checkout@v4<br>(fetch-depth: 0)"]
-        DiffExtract["Dump Pull Request Diff<br>git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff"]
         WIFScan["GCP WIF Authentication<br>google-github-actions/auth@v2"]
-        DockerFind["docker run cm-runner find .<br>(stdout -> findings.json)"]
+        DockerFind["docker run cm-runner find-diff base.sha head.sha<br>(Ephemeral staging at /tmp/cm-diff.diff)"]
         ExitTrap{"Trap Exit Code"}
-        CleanExit["Exit 0: Clean<br>outputs.has_findings = false"]
+        CleanExit["Exit 0: Clean / Empty Diff<br>outputs.has_findings = false"]
         FindingsExit["Exit 1: Findings Detected<br>outputs.has_findings = true"]
-        MatrixGen["jq Dynamic Matrix Generator<br>Filter by commit.diff & sort by severity<br>outputs.findings_matrix = [...]"]
+        MatrixGen["jq Dynamic Matrix Generator<br>Sort by severity & max limit<br>outputs.findings_matrix = [...]"]
 
-        Checkout --> DiffExtract --> WIFScan --> DockerFind --> ExitTrap
-        ExitTrap -->|Code 0| CleanExit
-        ExitTrap -->|Code 1| FindingsExit --> MatrixGen
+        Checkout --> WIFScan --> DockerFind --> ExitTrap
+        ExitTrap -->|"Code 0 (Clean)"| CleanExit
+        ExitTrap -->|"Code 1 (Findings)"| FindingsExit --> MatrixGen
     end
 
     subgraph FixMatrixJob["3. Parallel Fix Matrix Jobs (strategy: matrix)"]
@@ -57,7 +57,7 @@ flowchart TD
 
     subgraph ReviewBot["4. PR Review Suggestion Publisher"]
         direction TB
-        DiffCheck{"Is hunk line range inside<br>commit.diff hunks?"}
+        DiffCheck{"Is hunk line range inside<br>PR diff hunks?"}
         PostInline["POST /repos/{owner}/{repo}/pulls/{id}/reviews<br>Inline ```suggestion``` block"]
         PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level PR Comment with ```diff```"]
         StepSummary["Emit to $GITHUB_STEP_SUMMARY"]
@@ -74,26 +74,42 @@ flowchart TD
 
 ### 1. Diff-Scoped Vulnerability Scanning (`scan`)
 
-- **Diff Ingestion via `commit.diff`:** Checks out full history
-  (`fetch-depth: 0`) and dumps the exact pull request diff:
+- **Native Diff-Aware Scanning (`find-diff`):** Executes `cm-runner find-diff`
+  with PR base and head commit SHAs:
   ```bash
-  git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > commit.diff
+  docker run --rm \
+    -v "$(pwd):/workspace" \
+    -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
+    -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
+    -e NO_COLOR=1 \
+    -e TERM=dumb \
+    ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
   ```
-  Scoping analysis strictly to modified lines eliminates developer review
-  fatigue caused by pre-existing legacy issues.
+- **Zero Host Workspace Pollution & `git clean` Immunity:** Computes and stages
+  the patch inside container scratch space (`/tmp/cm-diff.diff`), completely
+  outside `/workspace`. This guarantees immunity against internal `cm find`
+  repository cleanup routines (`git clean -fdx`) and prevents leftover diff
+  files from polluting subsequent patch extraction during `cm-runner fix`.
+- **Dynamic Config Mutation & Prompt Grounding:** Dynamically registers `.diff`
+  in `scan.extensions.include` in `$HOME/.codemender/config.yaml` and injects a
+  grounding context flag
+  (`--context="The target is a Git unified diff for this repository."`).
 - **Keyless GCP WIF Authentication:** Uses `google-github-actions/auth@v2` with
   the runner's OIDC token (`id-token: write`) to generate short-lived
   Application Default Credentials (ADC).
-- **Scanner Execution & Exit Code Trapping:** Executes `cm-runner find .`:
-  - **Exit Code 0 (Clean):** Zero vulnerabilities found. Sets
-    `has_findings=false` and terminates successfully.
+- **Scanner Execution & Exit Code Trapping:** Traps the exit code of
+  `find-diff`:
+  - **Exit Code 0 (Clean / Empty Diff):** Zero vulnerabilities found or PR diff
+    was 0 bytes. Sets `has_findings=false` and terminates successfully without
+    spawning downstream fix matrix jobs.
   - **Exit Code 1 (Findings Detected):** Captures findings JSON to
     `.codemender-out/findings.json` and sets `has_findings=true`.
-  - **Exit Code > 1 (Error):** Fatal CLI/runtime error; fails the step.
-- **Dynamic Matrix Partitioning:** Parses findings with `jq`, filters items
-  intersecting `commit.diff`, sorts remaining findings by severity (`CRITICAL` >
-  `HIGH` > `MEDIUM` > `LOW`), bounds to the top $M$ items (default: 10), and
-  emits the JSON payload array to `outputs.findings_matrix`.
+  - **Exit Code > 1 (Error):** Fatal Git, CLI, or runtime error (e.g. shallow
+    clone requiring `fetch-depth: 0`); fails the step.
+- **Dynamic Matrix Partitioning:** Parses findings with `jq`, sorts remaining
+  findings by severity (`CRITICAL` > `HIGH` > `MEDIUM` > `LOW`), bounds to the
+  top $M$ items (default: 10), and emits the JSON payload array to
+  `outputs.findings_matrix`.
 
 ### 2. Parallel Stateless Patch Remediation (`fix`)
 
@@ -247,15 +263,15 @@ Add the values returned by Terraform or `setup-wif.sh` to your target GitHub
 repository:
 
 1. Navigate to **Settings > Secrets and variables > Actions**.
-2. Click **New repository secret**.
-3. Create `GCP_WIF_PROVIDER` with the provider resource name.
-4. Create `GCP_SERVICE_ACCOUNT` with the service account email.
+1. Click **New repository secret**.
+1. Create `GCP_WIF_PROVIDER` with the provider resource name.
+1. Create `GCP_SERVICE_ACCOUNT` with the service account email.
 
 ### Step 4: Verify on Pull Request
 
 1. Create a feature branch and commit changes.
-2. Open a pull request targeting `main`.
-3. Verify that the `scan` job triggers, evaluates `commit.diff`, and launches
+1. Open a pull request targeting `main`.
+1. Verify that the `scan` job triggers, executes `find-diff`, and launches
    parallel `fix` matrix jobs to post inline suggestions when findings occur.
 
 ______________________________________________________________________
@@ -283,4 +299,3 @@ github-actions/
 > **Note on Repository Isolation:** All workflow files are maintained under
 > `github-actions/` rather than `.github/` to prevent unintentional automated CI
 > execution on `cm-connect`.
-

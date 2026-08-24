@@ -10,6 +10,7 @@
 #   - ADR-0004: Container Execution Mode & Sandbox Isolation Trade-offs
 #   - ADR-0005: Stateless Fix Runner Protocol
 #   - ADR-0006: Lightweight Declarative Matrix Partitioning via jq
+#   - ADR-0007: Native Diff-Aware Vulnerability Scanning Protocol (find-diff)
 #
 # Requirements & Configuration:
 # - Required GitHub Repository Secrets:
@@ -21,8 +22,8 @@
 #   - pull-requests: write (post inline review comments and PR summaries)
 #
 # Pipeline Lifecycle:
-# 1. scan: Dumps PR diff (commit.diff), runs batch scanner, traps exit code,
-#    and outputs dynamic findings matrix partitioned by diff intersection.
+# 1. scan: Runs native diff-aware scanner (find-diff), traps exit code, and
+#    outputs dynamic findings matrix partitioned by severity and max limit.
 # 2. fix: Concurrently remediates findings via cm-runner fix with FUSE isolation
 #    and publishes inline 1-click apply review suggestions.
 
@@ -52,14 +53,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: "Extract Pull Request diff"
-        id: diff
-        run: |
-          git diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > commit.diff
-          if [ ! -s commit.diff ]; then
-            echo "PR diff is empty. Skipping scan."
-          fi
-
       - name: "Authenticate to Google Cloud via WIF"
         uses: google-github-actions/auth@v2
         with:
@@ -71,13 +64,6 @@ jobs:
         run: |
           mkdir -p .codemender-out
 
-          # Check if diff is empty
-          if [ ! -s commit.diff ]; then
-            echo "has_findings=false" >> "$GITHUB_OUTPUT"
-            echo "findings_matrix=[]" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           # Execute scanner with exit code trapping
           set +e
           docker run --rm \
@@ -86,7 +72,7 @@ jobs:
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
             -e NO_COLOR=1 \
             -e TERM=dumb \
-            ghcr.io/cledoux/cm-runner:latest find . > .codemender-out/findings.json
+            ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
           SCAN_EXIT_CODE=$?
           set -e
 
@@ -104,7 +90,7 @@ jobs:
               FILTER_SCRIPT=".github/scripts/filter_findings.jq"
             fi
 
-            MATRIX_JSON=$(jq -c --rawfile diff commit.diff -f "$FILTER_SCRIPT" .codemender-out/findings.json)
+            MATRIX_JSON=$(jq -c -f "$FILTER_SCRIPT" .codemender-out/findings.json)
             if [ -z "$MATRIX_JSON" ] || [ "$MATRIX_JSON" = "null" ] || [ "$MATRIX_JSON" = "[]" ]; then
               echo "No findings intersect with modified PR lines."
               echo "has_findings=false" >> "$GITHUB_OUTPUT"
