@@ -1,6 +1,6 @@
 ---
 archetype: capability
-status: proposed
+status: accepted
 category: runner
 name: cm-fix-runner
 governing_spec: openspec/specs/runner/cm-fix-runner/spec.md

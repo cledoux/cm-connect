@@ -1,6 +1,6 @@
 ---
 archetype: capability
-status: proposed
+status: accepted
 category: workflow
 name: cm-pr-workflow
 governing_proposal: openspec/proposals/cm-pr-workflow/proposal.md
