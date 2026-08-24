@@ -184,6 +184,13 @@ func MutateConfigWithOverrides(yamlBytes []byte, overrides map[string]any) ([]by
 // and writes the updated content back to the file.
 // Governing: REQ-0002, SPEC-cm-batch-runner
 func MutateConfigFile(path string) error {
+	return MutateConfigFileWithOverrides(path, DefaultOverrides)
+}
+
+// MutateConfigFileWithOverrides reads a YAML configuration file from path, mutates it in-place using
+// the provided overrides, and writes the updated content back to the file.
+// Governing: REQ-0002, REQ-0014, SPEC-cm-batch-runner, ADR-0007
+func MutateConfigFileWithOverrides(path string, overrides map[string]any) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to inspect config file %q: %w", path, err)
@@ -194,7 +201,7 @@ func MutateConfigFile(path string) error {
 		return fmt.Errorf("failed to read config file %q: %w", path, err)
 	}
 
-	mutated, err := MutateConfig(data)
+	mutated, err := MutateConfigWithOverrides(data, overrides)
 	if err != nil {
 		return fmt.Errorf("failed to mutate config file %q: %w", path, err)
 	}
@@ -205,6 +212,7 @@ func MutateConfigFile(path string) error {
 
 	return nil
 }
+
 
 // DefaultConfigPath returns the default CodeMender configuration file path
 // ($HOME/.codemender/config.yaml).
