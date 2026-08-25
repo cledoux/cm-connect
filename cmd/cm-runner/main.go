@@ -126,7 +126,6 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 		}
 	}()
 
-
 	findDiffCmd := cmrunner.NewFindDiffCommand(diffPath)
 	findDiffCmd.Flags = plan.PassthroughFlags
 
