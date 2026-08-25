@@ -105,6 +105,10 @@ ______________________________________________________________________
      `tools.confirm_writes` to `false` (replacing the interactive default
      `true`), ensuring headless scans and subprocesses execute without blocking
      on interactive confirmation prompts.
+   - **Sandbox Allowed Project Paths (`project_paths`):** MUST ensure
+     `"/workspace"` is added to `project_paths` (creating the sequence if
+     commented out or missing), allowing CodeMender's tool sandbox to grant read
+     access across the mounted repository during diff and single-file scans.
 1. **Preservation of Unmanaged & New Upstream Options:** The mutation process
    MUST preserve all other existing, unmanaged, or newly added configuration
    blocks, keys, comments, and structure produced by `cm init` without data loss
@@ -136,6 +140,7 @@ ______________________________________________________________________
 - **AND** `output.format` MUST equal `"json"`.
 - **AND** `tools.confirm_commands` MUST equal `false`.
 - **AND** `tools.confirm_writes` MUST equal `false`.
+- **AND** `project_paths` MUST contain `"/workspace"`.
 
 #### Scenario: Preserve unmanaged and new upstream options from cm init
 

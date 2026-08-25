@@ -120,7 +120,12 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 		fmt.Fprintf(stderr, "Error: failed to write staged diff file %q: %v\n", diffPath, err)
 		return cmrunner.ExitError
 	}
-	defer os.Remove(diffPath)
+	defer func() {
+		if err := os.Remove(diffPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(stderr, "Warning: failed to remove staged diff file %q: %v\n", diffPath, err)
+		}
+	}()
+
 
 	findDiffCmd := cmrunner.NewFindDiffCommand(diffPath)
 	findDiffCmd.Flags = plan.PassthroughFlags

@@ -22,6 +22,7 @@ var DefaultOverrides = map[string]any{
 	"output.format":           "json",
 	"tools.confirm_commands":  false,
 	"tools.confirm_writes":    false,
+	"project_paths":           []string{"/workspace"},
 }
 
 // Config represents a CodeMender configuration document loaded in memory.
@@ -116,52 +117,9 @@ func (c *Config) AppendExtension(ext string) error {
 // pre-scan VCS reset during diff scanning.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
 func (c *Config) DisableReset() error {
-	if c.root.Kind != yaml.DocumentNode || len(c.root.Content) == 0 {
-		return errors.New("invalid or empty YAML document root")
-	}
-	rootMapping := c.root.Content[0]
-	if rootMapping.Kind != yaml.MappingNode {
-		return fmt.Errorf("root node is not a mapping (got kind %v)", rootMapping.Kind)
-	}
-
-	vcsNode := ensureMappingChild(rootMapping, "vcs")
-	commandsNode := ensureMappingChild(vcsNode, "commands")
-
-	for i := 0; i < len(commandsNode.Content); i += 2 {
-		if commandsNode.Content[i].Value == "reset" {
-			commandsNode.Content[i+1].Kind = yaml.ScalarNode
-			commandsNode.Content[i+1].Tag = "!!str"
-			commandsNode.Content[i+1].Value = "true"
-			return nil
-		}
-	}
-
-	commandsNode.Content = append(commandsNode.Content,
-		&yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
-			Value: "reset",
-		},
-		&yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
-			Value: "true",
-		},
-	)
-	return nil
-}
-
-// DisableReset loads the default CodeMender configuration file, disables VCS reset in-place, and writes it back.
-// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-func DisableReset() error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
-	}
-	if err := cfg.DisableReset(); err != nil {
-		return err
-	}
-	return cfg.Write()
+	return c.ApplyOverrides(map[string]any{
+		"vcs.commands.reset": "true",
+	})
 }
 
 // bytes serializes the mutated YAML document back to formatted bytes.
@@ -264,30 +222,8 @@ func findMappingChild(mappingNode *yaml.Node, key string) (*yaml.Node, error) {
 	return nil, nil
 }
 
-// ensureMappingChild returns the child MappingNode matching key, creating it if not present.
-func ensureMappingChild(mappingNode *yaml.Node, key string) *yaml.Node {
-	for i := 0; i < len(mappingNode.Content); i += 2 {
-		if mappingNode.Content[i].Value == key {
-			if i+1 < len(mappingNode.Content) && mappingNode.Content[i+1].Kind == yaml.MappingNode {
-				return mappingNode.Content[i+1]
-			}
-		}
-	}
-
-	keyNode := &yaml.Node{
-		Kind:  yaml.ScalarNode,
-		Tag:   "!!str",
-		Value: key,
-	}
-	valNode := &yaml.Node{
-		Kind: yaml.MappingNode,
-		Tag:  "!!map",
-	}
-	mappingNode.Content = append(mappingNode.Content, keyNode, valNode)
-	return valNode
-}
-
 // lookupPath traverses a YAML document tree following dot-separated path components.
+
 func lookupPath(rootMapping *yaml.Node, path string) (*yaml.Node, error) {
 	parts := strings.Split(path, ".")
 	current := rootMapping
@@ -298,8 +234,22 @@ func lookupPath(rootMapping *yaml.Node, path string) (*yaml.Node, error) {
 			return nil, fmt.Errorf("error resolving %q at segment %q: %w", path, part, err)
 		}
 		if child == nil {
+			if path == "project_paths" && i == 0 {
+				keyNode := &yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Tag:   "!!str",
+					Value: "project_paths",
+				}
+				valNode := &yaml.Node{
+					Kind: yaml.SequenceNode,
+					Tag:  "!!seq",
+				}
+				rootMapping.Content = append(rootMapping.Content, keyNode, valNode)
+				return valNode, nil
+			}
 			return nil, fmt.Errorf("critical configuration key %q is missing or relocated", path)
 		}
+
 		if i == len(parts)-1 {
 			return child, nil
 		}
