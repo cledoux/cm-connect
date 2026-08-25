@@ -534,18 +534,25 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
 1. **Git Diff Execution & Passthrough:** All positional tokens before `--` MUST
    be forwarded directly to `git diff` inside `/workspace` (supporting ref
    pairs, triple-dot ranges, or defaulting to `HEAD` if omitted).
-1. **Ephemeral Scratch Staging:** The generated diff MUST be written to
-   container scratch space (`/tmp/cm-diff.diff`) completely outside
-   `/workspace`, preventing deletion by `cm find` workspace cleanup routines and
-   protecting subsequent `fix` patch extractions from untracked file pollution.
-1. **Dynamic `.diff` Extension Registration:** `cm-runner` MUST dynamically
-   mutate `$HOME/.codemender/config.yaml` via `pkg/cmconfig` to ensure
-   `scan.extensions.include` contains `".diff"`.
-1. **Context Prompt Consolidation:** `cm-runner` MUST inject the base context
-   flag `--context="The target is a Git unified diff for this repository."`. If
-   the caller provides custom `-c` or `--context` flags after `--`, `cm-runner`
-   MUST merge them into a single consolidated `--context` argument and strip the
-   standalone user flag from passthrough args.
+1. **Repository-Root Diff Staging:** The generated diff MUST be written directly
+   to the root of the target repository (`/workspace/.codemender-diff.diff`).
+   Placing the diff in the repository root ensures CodeMender anchors its
+   workspace context at `/workspace`, enabling the scan reasoning engine to
+   inspect changed repository source files directly.
+1. **Dynamic Configuration Mutation (Diff Inclusion & VCS Reset Disabling):**
+   `cm-runner` MUST dynamically mutate `$HOME/.codemender/config.yaml` via
+   `pkg/cmconfig` to:
+   - Append `".diff"` to `scan.extensions.include` so CodeMender scans the
+     staged patch file.
+   - Disable VCS workspace reset exclusively during diff scanning by setting
+     `vcs.commands.reset` to `"true"`, preventing CodeMender's pre-scan cleanup
+     from wiping out the staged diff file.
+1. **Context Prompt Consolidation & Repository Grounding:** `cm-runner` MUST
+   inject the base context flag
+   `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository."`.
+   If the caller provides custom `-c` or `--context` flags after `--`,
+   `cm-runner` MUST merge them into a single consolidated `--context` argument
+   and strip the standalone user flag from passthrough args.
 1. **Empty Diff Fast-Path:** If `git diff` produces 0 bytes output, `find-diff`
    MUST immediately emit `[]` on `stdout`, log an info message to `stderr`, and
    terminate with exit code `0` without invoking remote LLM APIs.
@@ -553,8 +560,9 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
    revision, shallow clone), `find-diff` MUST emit a descriptive error to
    `stderr` advising repository history configuration (e.g. `fetch-depth: 0`)
    and terminate with exit code `2`.
-1. **Ephemeral Teardown:** Upon completion, `find-diff` MUST remove
-   `/tmp/cm-diff.diff`.
+1. **Ephemeral Teardown:** Upon completion of Phase 1 and Phase 2, `find-diff`
+   MUST remove the staged diff file (`/workspace/.codemender-diff.diff`),
+   guaranteeing zero untracked file residue in the repository.
 
 #### Scenario: Execute find-diff on modified PR commits
 
@@ -562,11 +570,13 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
   and `HEAD`
 - **WHEN** executing `cm-runner find-diff origin/main HEAD`
 - **THEN** `cm-runner` MUST execute `git diff origin/main HEAD` into
-  `/tmp/cm-diff.diff`
-- **AND** mutate `$HOME/.codemender/config.yaml` to include `.diff`
+  `/workspace/.codemender-diff.diff`
+- **AND** mutate `$HOME/.codemender/config.yaml` to include `.diff` and set
+  `vcs.commands.reset` to `"true"`
 - **AND** execute
-  `cm find /tmp/cm-diff.diff -y --context="The target is a Git unified diff for this repository."`
-- **AND** emit structured findings JSON to `stdout`.
+  `cm find /workspace/.codemender-diff.diff -y --context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository."`
+- **AND** emit structured findings JSON to `stdout`
+- **AND** remove `/workspace/.codemender-diff.diff` upon exit.
 
 #### Scenario: Short-circuit on empty git diff
 
@@ -575,13 +585,13 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
 - **THEN** `cm-runner` MUST immediately emit `[]` on `stdout`
 - **AND** terminate cleanly with exit code `0`.
 
-#### Scenario: Consolidate user-supplied context flags
+#### Scenario: Consolidate user-supplied context flags with repository grounding
 
 - **GIVEN** an invocation
   `cm-runner find-diff origin/main HEAD -- -c "Focus on SQL injection"`
 - **WHEN** `cm-runner` prepares the find command
 - **THEN** `cm find` MUST receive
-  `--context="The target is a Git unified diff for this repository. Focus on SQL injection"`.
+  `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository. Focus on SQL injection"`.
 
 #### Scenario: Fail fast on invalid git revisions
 
