@@ -55,10 +55,13 @@ capability focuses on:
    errors.
 1. **Dedicated `github-actions/` Structure & Automated Installer:** Packages all
    deliverables under `github-actions/`
-   (`github-actions/workflows/codemender.yml`,
-   `github-actions/scripts/install.sh`, `github-actions/scripts/setup-wif.sh`,
-   and `github-actions/README.md`) with a 1-command installer script for target
-   repos.
+   (`github-actions/workflows/codemender.yml`, `github-actions/install.sh`,
+   `github-actions/scripts/setup-wif.sh`,
+   `github-actions/scripts/filter_findings.jq`,
+   `github-actions/scripts/publish_comments.py`, and `github-actions/README.md`)
+   with a 1-command installer script that builds and pushes the container image
+   directly to the target repository's GitHub Container Registry (GHCR)
+   namespace.
 
 ### Goals
 
@@ -71,8 +74,9 @@ capability focuses on:
 - Post 1-click apply inline code suggestions directly in GitHub PR review
   threads.
 - Prevent GitHub API 422 errors through intelligent diff-boundary fallbacks.
-- Provide an automated installer script (`install.sh`) to copy workflow assets
-  to target repositories with zero manual configuration errors.
+- Provide an automated installer script (`github-actions/install.sh`) to build
+  and push the container image to the target repository's GHCR namespace,
+  template the workflow, and copy assets with zero manual configuration errors.
 - Maintain all workflow files outside `.github/` in `cm-connect`.
 
 ### Non-Goals
@@ -306,8 +310,8 @@ All GitHub Actions assets are organized under `github-actions/`:
 cm-connect/
 ├── github-actions/
 │   ├── README.md               # Quickstart guide & installation instructions
+│   ├── install.sh              # One-command installer (builds/pushes image & templates workflow)
 │   ├── scripts/
-│   │   ├── install.sh          # One-command installer copying workflow to target repo
 │   │   ├── setup-wif.sh        # GCP IAM & Workload Identity Federation configuration script
 │   │   ├── filter_findings.jq  # Standalone jq filter for dynamic fix matrix generation
 │   │   └── publish_comments.py # Zero-dependency Python 3 PR review comment & fallback publisher
@@ -324,24 +328,55 @@ cm-connect/
 │               └── design.md   # Architectural design and protocol specification
 ```
 
-### Automated Installer Script (`install.sh`):
+### Automated Installer Protocol (`github-actions/install.sh`):
 
-```bash
-#!/usr/bin/env bash
-# Usage: ./github-actions/scripts/install.sh /path/to/target/repo
-set -euo pipefail
+The `install.sh` script automates the full onboarding workflow from the
+maintainer's local `cm-connect` checkout:
 
-TARGET_REPO="${1:-}"
-if [ -z "${TARGET_REPO}" ] || [ ! -d "${TARGET_REPO}" ]; then
-  echo "Usage: $0 <path-to-target-repo>" >&2
-  exit 1
-fi
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Maintainer
+    participant Installer as github-actions/install.sh
+    participant Git as Target Git Remote
+    participant Docker as Local Docker Engine
+    participant GHCR as Target GHCR Registry (ghcr.io)
+    participant TargetWS as Target Repository (.github/)
 
-mkdir -p "${TARGET_REPO}/.github/workflows"
-cp github-actions/workflows/codemender.yml "${TARGET_REPO}/.github/workflows/codemender.yml"
-
-echo "✓ Successfully installed CodeMender workflow to ${TARGET_REPO}/.github/workflows/codemender.yml"
-echo "Next steps:"
-echo "1. Run ./github-actions/scripts/setup-wif.sh to configure Google Cloud IAM & WIF"
-echo "2. Add GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT secrets to your GitHub repository"
+    Dev->>Installer: ./github-actions/install.sh /path/to/target-repo
+    Installer->>Git: 1. Auto-discover slug (e.g. my-org/my-app) via remote.origin.url
+    Installer->>GHCR: 2. Docker login ghcr.io via gh auth token
+    Installer->>Docker: 3. docker build --label org.opencontainers.image.source=https://github.com/my-org/my-app -t ghcr.io/my-org/my-app/cm-runner:latest -f docker/Dockerfile .
+    Installer->>GHCR: 4. docker push ghcr.io/my-org/my-app/cm-runner:latest
+    Installer->>TargetWS: 5. Template codemender.yml with resolved image tag
+    Installer->>TargetWS: 6. Copy filter_findings.jq, publish_comments.py, setup-wif.sh (chmod +x)
+    TargetWS-->>Dev: Ready for GCP WIF secret configuration
 ```
+
+### Installation Lifecycle & Pre-flight Steps:
+
+1. **Pre-flight Tool Validation:** Verifies that `git`, `gh` (authenticated via
+   `gh auth status`), and an active Docker daemon are available before
+   initiating the build. If `gh auth` lacks `write:packages` scope or Docker is
+   unavailable, the script provides actionable troubleshooting guidance or
+   prompts the user to use `--skip-build`.
+1. **Slug Auto-Discovery:** Strips protocol prefixes (`git@github.com:`,
+   `https://github.com/`) and `.git` suffixes from the target repository's git
+   remote URL to cleanly extract `<owner>/<repo>`.
+1. **Workflow Templating:** Replaces the default container image reference in
+   `codemender.yml` with the resolved target GHCR tag
+   (`ghcr.io/<owner>/<repo>/cm-runner:latest`) during destination copy.
+1. **Executable Permissions:** Ensures `publish_comments.py` and `setup-wif.sh`
+   are marked executable (`chmod +x`) in `<target-repo>/.github/scripts/`.
+
+### Supported CLI Flags for `install.sh`:
+
+- `install.sh <target-repo-dir>`: Full install (auto-discovers git remote slug,
+  logs into `ghcr.io`, builds image with OCI source label, pushes image to
+  `ghcr.io/<owner>/<repo>/cm-runner:latest`, and templates workflow).
+- `--skip-build`: Skips the Docker build and push steps, copying the workflow
+  template and helper scripts directly.
+- `--image <custom-image>`: Overrides the container image reference in the
+  templated workflow (e.g. for pre-existing shared registries).
+- `--repo <owner/repo>`: Explicitly specifies the target repository slug,
+  overriding git remote auto-discovery.

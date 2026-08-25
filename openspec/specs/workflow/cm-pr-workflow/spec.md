@@ -57,10 +57,12 @@ that:
 1. **Organizes Dedicated GitHub Actions Assets:** Packages the workflow
    template, setup guide, WIF configuration script, and automated installer
    script strictly under `github-actions/`
-   (`github-actions/workflows/codemender.yml`,
-   `github-actions/scripts/install.sh`, `github-actions/scripts/setup-wif.sh`,
-   and `github-actions/README.md`), ensuring zero unintentional workflow
-   execution on `cm-connect`.
+   (`github-actions/workflows/codemender.yml`, `github-actions/install.sh`,
+   `github-actions/scripts/setup-wif.sh`,
+   `github-actions/scripts/filter_findings.jq`,
+   `github-actions/scripts/publish_comments.py`, and
+   `github-actions/README.md`), ensuring zero unintentional workflow execution
+   on `cm-connect`.
 
 ## Requirements
 
@@ -312,16 +314,21 @@ request's diff hunk):
 
 ______________________________________________________________________
 
-### REQ-0008: Dedicated `github-actions/` Directory and Automated Installer
+### REQ-0008: Dedicated `github-actions/` Directory and Automated Installer with Target GHCR Build & Push
 
 All GitHub Actions assets MUST be packaged under a dedicated `github-actions/`
 directory:
 
 - `github-actions/workflows/codemender.yml`: The complete standalone workflow
   template.
-- `github-actions/scripts/install.sh`: An executable installation script that
-  copies the workflow template and configuration files to a target repository
-  with a single command.
+- `github-actions/install.sh`: An executable installation script located
+  directly under `github-actions/install.sh` that automates discovery of the
+  target repository's git remote slug, builds the `cm-runner` container image
+  locally from `cm-connect`, logs into GitHub Container Registry (`ghcr.io`) via
+  the GitHub CLI (`gh`), pushes the image directly to the target repository's
+  GHCR namespace (`ghcr.io/<target-owner>/<target-repo>/cm-runner:latest`),
+  templates `codemender.yml` with the resolved image tag, and installs the
+  workflow and helper scripts into the target repository.
 - `github-actions/scripts/setup-wif.sh`: An executable helper script that runs
   `gcloud` commands to provision GCP Workload Identity Pool, Provider, Service
   Account, and IAM bindings.
@@ -333,30 +340,73 @@ directory:
 - `github-actions/README.md`: Quickstart onboarding and configuration
   documentation.
 
-The repository MUST NOT create or enable active workflows in
-`.github/workflows/` on `cm-connect` to prevent automated CI execution on this
-repository during development.
+1. **Target Slug Auto-Discovery:** `install.sh` MUST automatically detect the
+   target repository slug (`owner/repo`) from the target repository's git remote
+   (`git -C <target-dir> config --get remote.origin.url`), while supporting an
+   explicit override via `--repo <owner/repo>`.
+1. **GHCR Authentication & Local Build:** By default, `install.sh` MUST
+   authenticate to `ghcr.io` using `gh auth token`, compile and build the
+   `cm-runner` container image from local `docker/Dockerfile`, and attach the
+   OCI image source label
+   (`org.opencontainers.image.source=https://github.com/<owner>/<repo>`).
+1. **Image Push & Templating:** `install.sh` MUST push the image to
+   `ghcr.io/<owner>/<repo>/cm-runner:latest` and template
+   `github-actions/workflows/codemender.yml` to reference that exact image tag
+   when copying to `<target-repo>/.github/workflows/codemender.yml`.
+1. **Configurable Flags:** `install.sh` MUST support:
+   - `--skip-build`: Skips local Docker building and pushing, copying assets
+     directly.
+   - `--image <custom-image>`: Overrides the container image reference in the
+     templated workflow.
+   - `--repo <owner/repo>`: Explicitly specifies the target repository slug.
+1. **Helper Script Installation:** `install.sh` MUST copy `filter_findings.jq`,
+   `publish_comments.py`, and `setup-wif.sh` from `github-actions/scripts/` into
+   `<target-repo>/.github/scripts/` and set executable permissions.
+1. **Repository Isolation:** The repository MUST NOT create or enable active
+   workflows in `.github/workflows/codemender.yml` on `cm-connect` to prevent
+   automated CI execution on this repository during development.
 
-#### Scenario: Install workflow to target repository via installer script
+#### Scenario: Full automated installation with local build and GHCR push
 
-- **GIVEN** a target repository at `/path/to/my-repo`
-- **WHEN** the user executes
-  `./github-actions/scripts/install.sh /path/to/my-repo`
-- **THEN** the script MUST copy `github-actions/workflows/codemender.yml` to
-  `/path/to/my-repo/.github/workflows/codemender.yml` and display next-step
-  secret configuration instructions.
+- **GIVEN** a target git repository at `/path/to/target-repo` with remote
+  `git@github.com:my-org/my-app.git`
+- **WHEN** executing `./github-actions/install.sh /path/to/target-repo`
+- **THEN** `install.sh` MUST discover slug `my-org/my-app`
+- **AND** authenticate to `ghcr.io` via `gh auth token`
+- **AND** build and push `ghcr.io/my-org/my-app/cm-runner:latest`
+- **AND** template `/path/to/target-repo/.github/workflows/codemender.yml` with
+  `ghcr.io/my-org/my-app/cm-runner:latest`
+- **AND** copy helper scripts to `/path/to/target-repo/.github/scripts/`.
+
+#### Scenario: Fast installation with --skip-build flag
+
+- **GIVEN** an invocation
+  `./github-actions/install.sh --skip-build /path/to/target-repo`
+- **WHEN** the script executes
+- **THEN** it MUST skip Docker build and push steps and copy workflow and script
+  files to `/path/to/target-repo/.github/`.
+
+#### Scenario: Custom image tag override via --image flag
+
+- **GIVEN** an invocation
+  `./github-actions/install.sh --image custom-registry.io/org/cm:v1 /path/to/target-repo`
+- **WHEN** the script executes
+- **THEN** the installed workflow in
+  `/path/to/target-repo/.github/workflows/codemender.yml` MUST reference
+  `custom-registry.io/org/cm:v1`.
 
 #### Scenario: Verify template isolation in cm-connect
 
 - **GIVEN** the `cm-connect` codebase
 - **WHEN** reviewing root directory paths
 - **THEN** the workflow file MUST exist at
-  `github-actions/workflows/codemender.yml` and
-  `.github/workflows/codemender.yml` MUST NOT exist.
+  `github-actions/workflows/codemender.yml`
+- **AND** the installer MUST exist at `github-actions/install.sh`
+- **AND** `.github/workflows/codemender.yml` MUST NOT exist.
 
 ______________________________________________________________________
 
-### REQ-TEST.2: PR Review Comment and Fallback Publisher Verification
+### REQ-0009: PR Review Comment and Fallback Publisher Verification
 
 The test suite MUST verify the PR review comment publisher script
 (`github-actions/scripts/publish_comments.py`) across single-line suggestions,
