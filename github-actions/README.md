@@ -78,12 +78,12 @@ flowchart TD
   with PR base and head commit SHAs:
   ```bash
   docker run --rm \
-    -v "$(pwd):/workspace" \
-    -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
-    -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
-    -e NO_COLOR=1 \
-    -e TERM=dumb \
-    ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
+      -v "$(pwd):/workspace" \
+      -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
+      -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
+      -e NO_COLOR=1 \
+      -e TERM=dumb \
+      ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
   ```
 - **Zero Host Workspace Pollution & `git clean` Immunity:** Computes and stages
   the patch inside container scratch space (`/tmp/cm-diff.diff`), completely
@@ -179,6 +179,17 @@ ______________________________________________________________________
 
 ## Prerequisites & Required Configuration
 
+### GitHub CLI (gh) & GHCR Permissions
+
+If you are building and pushing the container image locally to GitHub Container
+Registry (`ghcr.io`) via `install.sh`, your GitHub CLI token must have the
+`write:packages` scope:
+
+```bash
+# Refresh GitHub CLI credentials with package publishing scope:
+gh auth refresh -s write:packages
+```
+
 ### GitHub Repository Secrets
 
 Configure the following repository secrets under **Settings > Secrets and
@@ -197,6 +208,7 @@ The workflow requires the following permissions in the job definition:
 permissions:
   contents: read # Read repository code and commit history
   id-token: write # Request GitHub OIDC JWT for GCP WIF authentication
+  packages: read # Pull cm-runner container image from GHCR
   pull-requests: write # Publish review comments and PR suggestions
 ```
 
@@ -261,11 +273,11 @@ credentials:
 ```bash
 # Run WIF automated setup script:
 ./github-actions/scripts/setup-wif.sh \
-  --project="my-gcp-project" \
-  --repo="my-org/my-target-repo" \
-  --pool-name="codemender-pool" \
-  --provider-name="github-provider" \
-  --service-account="codemender-runner"
+    --project="my-gcp-project" \
+    --repo="my-org/my-target-repo" \
+    --pool-name="codemender-pool" \
+    --provider-name="github-provider" \
+    --service-account="codemender-runner"
 ```
 
 Both options output the exact values for `GCP_WIF_PROVIDER` and

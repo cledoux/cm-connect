@@ -29,6 +29,8 @@ func TestTerraformModuleFilesExistence(t *testing.T) {
 		"variables.tf",
 		"outputs.tf",
 		"versions.tf",
+		"terraform.tfvars.example",
+		".gitignore",
 		"README.md",
 	}
 
@@ -114,6 +116,9 @@ func TestTerraformMainContent(t *testing.T) {
 	if !strings.Contains(str, `"attribute.repository"`) || !strings.Contains(str, `"assertion.repository"`) {
 		t.Errorf("main.tf missing attribute.repository attribute mapping")
 	}
+	if !strings.Contains(str, `attribute_condition`) || !strings.Contains(str, `assertion.repository ==`) {
+		t.Errorf("main.tf missing attribute_condition for repository validation")
+	}
 
 	// REQ-0008.9: Service Account
 	if !strings.Contains(str, `resource "google_service_account" "runner"`) {
@@ -155,5 +160,53 @@ func TestTerraformOutputsContent(t *testing.T) {
 	}
 	if !strings.Contains(str, `output "gcp_service_account"`) {
 		t.Errorf("outputs.tf missing gcp_service_account output")
+	}
+}
+
+// Scenario 6: Verify terraform.tfvars.example contains required and optional configuration keys
+func TestTerraformExampleTfvarsContent(t *testing.T) {
+	tfDir := getTerraformDir(t)
+	content, err := os.ReadFile(filepath.Join(tfDir, "terraform.tfvars.example"))
+	if err != nil {
+		t.Fatalf("failed to read terraform.tfvars.example: %v", err)
+	}
+
+	str := string(content)
+
+	if !strings.Contains(str, `project_id =`) {
+		t.Errorf("terraform.tfvars.example missing project_id example")
+	}
+	if !strings.Contains(str, `github_repo =`) {
+		t.Errorf("terraform.tfvars.example missing github_repo example")
+	}
+	if !strings.Contains(str, `pool_id`) {
+		t.Errorf("terraform.tfvars.example missing pool_id comment")
+	}
+	if !strings.Contains(str, `sa_name`) {
+		t.Errorf("terraform.tfvars.example missing sa_name comment")
+	}
+}
+
+// Scenario 7: Verify .gitignore ignores .terraform, state files, and credentials
+func TestTerraformGitignoreContent(t *testing.T) {
+	tfDir := getTerraformDir(t)
+	content, err := os.ReadFile(filepath.Join(tfDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("failed to read .gitignore: %v", err)
+	}
+
+	str := string(content)
+
+	if !strings.Contains(str, ".terraform") {
+		t.Errorf(".gitignore missing .terraform ignore pattern")
+	}
+	if !strings.Contains(str, "*.tfstate") {
+		t.Errorf(".gitignore missing *.tfstate ignore pattern")
+	}
+	if !strings.Contains(str, "*.tfvars") {
+		t.Errorf(".gitignore missing *.tfvars ignore pattern")
+	}
+	if !strings.Contains(str, "!terraform.tfvars.example") {
+		t.Errorf(".gitignore missing exception for terraform.tfvars.example")
 	}
 }

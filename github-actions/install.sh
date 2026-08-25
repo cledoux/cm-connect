@@ -138,11 +138,23 @@ if [ "${SKIP_BUILD}" != "true" ]; then
     exit 1
   fi
 
-  # 2. Validate GitHub CLI (gh) authentication
-  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
-    echo "Error: GitHub CLI (gh) is not authenticated or not installed." >&2
+  # 2. Validate GitHub CLI (gh) authentication and scopes
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "Error: GitHub CLI (gh) is not installed." >&2
+    echo "Please install gh or pass --skip-build to skip local image build and push." >&2
+    exit 1
+  fi
+
+  GH_STATUS_OUT="$(gh auth status 2>&1 || true)"
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: GitHub CLI (gh) is not authenticated." >&2
     echo "Please authenticate with 'gh auth login' (with write:packages scope), or pass --skip-build to skip local image build and push." >&2
     exit 1
+  fi
+
+  if [[ "${RESOLVED_IMAGE}" =~ ^ghcr\.io/ ]] && ! echo "${GH_STATUS_OUT}" | grep -q "write:packages"; then
+    echo "Warning: GitHub CLI (gh) token may be missing the 'write:packages' scope required for ghcr.io." >&2
+    echo "If pushing fails, run: gh auth refresh -s write:packages" >&2
   fi
 
   echo "==> Authenticating Docker to GitHub Container Registry (ghcr.io)..."
@@ -159,7 +171,16 @@ if [ "${SKIP_BUILD}" != "true" ]; then
     "${REPO_ROOT}"
 
   echo "==> Pushing container image to ${RESOLVED_IMAGE}..."
-  docker push "${RESOLVED_IMAGE}"
+  if ! docker push "${RESOLVED_IMAGE}"; then
+    echo "Error: Failed to push container image to ${RESOLVED_IMAGE}." >&2
+    if [[ "${RESOLVED_IMAGE}" =~ ^ghcr\.io/ ]]; then
+      echo "This usually happens when your GitHub CLI token lacks the 'write:packages' scope." >&2
+      echo "To grant the required permission, run:" >&2
+      echo "  gh auth refresh -s write:packages" >&2
+      echo "Then re-run this installation script, or pass --skip-build to skip building and pushing." >&2
+    fi
+    exit 1
+  fi
 fi
 
 echo "==> Installing CodeMender workflow and companion assets to ${TARGET_REPO}..."
@@ -186,10 +207,10 @@ if [ -f "${SCRIPTS_SRC_DIR}/setup-wif.sh" ]; then
   chmod +x "${TARGET_REPO}/.github/scripts/setup-wif.sh"
 fi
 
-# Copy Terraform module if available
+# Copy Terraform module if available (including dotfiles like .gitignore)
 if [ -d "${TERRAFORM_SRC_DIR}" ]; then
   mkdir -p "${TARGET_REPO}/.github/terraform"
-  cp -r "${TERRAFORM_SRC_DIR}"/* "${TARGET_REPO}/.github/terraform/"
+  cp -R "${TERRAFORM_SRC_DIR}"/. "${TARGET_REPO}/.github/terraform/"
 fi
 
 echo "✓ Successfully installed CodeMender workflow to ${TARGET_REPO}/.github/workflows/codemender.yml"

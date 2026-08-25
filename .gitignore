@@ -19,3 +19,14 @@ __pycache__/
 .vscode/
 *.swp
 *~
+
+# Terraform local state and provider binaries
+**/.terraform/*
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+*.tfplan
