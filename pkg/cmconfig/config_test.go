@@ -30,6 +30,10 @@ tools:
   confirm_commands: true
   confirm_writes: true
   timeout_seconds: 300
+vcs:
+  type: git
+  commands:
+    reset: "git checkout HEAD -- ."
 `
 
 func TestLoadConfig(t *testing.T) {
@@ -458,6 +462,9 @@ func TestApplyDefaultOverrides_TopLevel(t *testing.T) {
 	if !strings.Contains(string(data), `format: "json"`) && !strings.Contains(string(data), `format: json`) {
 		t.Errorf("expected file to contain format: json, got:\n%s", string(data))
 	}
+	if !strings.Contains(string(data), "project_paths") || !strings.Contains(string(data), "/workspace") {
+		t.Errorf("expected file to contain project_paths with /workspace, got:\n%s", string(data))
+	}
 }
 
 func TestDefaultConfigPath(t *testing.T) {
@@ -479,4 +486,58 @@ func TestDefaultConfigPath(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error when HOME unset, got nil")
 	}
+}
+
+func TestConfig_DisableReset(t *testing.T) {
+	t.Run("updates existing vcs reset command to true", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
+		}
+
+		if err := cfg.DisableReset(); err != nil {
+			t.Fatalf("unexpected DisableReset error: %v", err)
+		}
+
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read back config: %v", err)
+		}
+		if !strings.Contains(string(data), `reset: "true"`) && !strings.Contains(string(data), `reset: true`) {
+			t.Errorf("expected config to contain reset: true, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("fails when vcs section is missing", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		noVCS := `
+scan:
+  extensions:
+    include:
+      - ".go"
+`
+		if err := os.WriteFile(configPath, []byte(noVCS), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
+		}
+
+		if err := cfg.DisableReset(); err == nil {
+			t.Errorf("expected error when vcs section is missing, got nil")
+		}
+	})
 }

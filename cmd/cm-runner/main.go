@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -64,7 +65,7 @@ Exit Codes:
 // execGitDiffFn executes git diff within the specified directory (pluggable for testing).
 // Governing: ADR-0007, ADR-0008, REQ-0014, SPEC-cm-batch-runner
 var execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmdArgs := append([]string{"--no-pager", "diff"}, args...)
+	cmdArgs := append([]string{"-c", "safe.directory=*", "--no-pager", "diff"}, args...)
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -94,6 +95,10 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
 		return cmrunner.ExitError
 	}
+	if err := cfg.DisableReset(); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to disable VCS reset in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
 	if err := cfg.Write(); err != nil {
 		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
 		return cmrunner.ExitError
@@ -105,19 +110,23 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 		return cmrunner.ExitUsage
 	}
 
-	if len(diffBytes) == 0 {
+	if len(bytes.TrimSpace(diffBytes)) == 0 {
 		fmt.Fprintln(stdout, "[]")
 		return cmrunner.ExitClean
 	}
 
-	scratchPath := cmrunner.DefaultDiffPath
-	if err := os.WriteFile(scratchPath, diffBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "Error: failed to write scratch diff file %q: %v\n", scratchPath, err)
+	diffPath := filepath.Join(workspaceDir, cmrunner.DefaultDiffFilename)
+	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to write staged diff file %q: %v\n", diffPath, err)
 		return cmrunner.ExitError
 	}
-	defer os.Remove(scratchPath)
+	defer func() {
+		if err := os.Remove(diffPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(stderr, "Warning: failed to remove staged diff file %q: %v\n", diffPath, err)
+		}
+	}()
 
-	findDiffCmd := cmrunner.NewFindDiffCommand(scratchPath)
+	findDiffCmd := cmrunner.NewFindDiffCommand(diffPath)
 	findDiffCmd.Flags = plan.PassthroughFlags
 
 	reportCmd := cmrunner.NewReportCommand("json")

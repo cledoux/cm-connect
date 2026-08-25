@@ -22,6 +22,7 @@ var DefaultOverrides = map[string]any{
 	"output.format":           "json",
 	"tools.confirm_commands":  false,
 	"tools.confirm_writes":    false,
+	"project_paths":           []string{"/workspace"},
 }
 
 // Config represents a CodeMender configuration document loaded in memory.
@@ -109,6 +110,15 @@ func (c *Config) ApplyOverrides(overrides map[string]any) error {
 func (c *Config) AppendExtension(ext string) error {
 	return c.ApplyOverrides(map[string]any{
 		"scan.extensions.include": []string{ext},
+	})
+}
+
+// DisableReset sets vcs.commands.reset to "true" to suppress CodeMender's
+// pre-scan VCS reset during diff scanning.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func (c *Config) DisableReset() error {
+	return c.ApplyOverrides(map[string]any{
+		"vcs.commands.reset": "true",
 	})
 }
 
@@ -213,6 +223,7 @@ func findMappingChild(mappingNode *yaml.Node, key string) (*yaml.Node, error) {
 }
 
 // lookupPath traverses a YAML document tree following dot-separated path components.
+
 func lookupPath(rootMapping *yaml.Node, path string) (*yaml.Node, error) {
 	parts := strings.Split(path, ".")
 	current := rootMapping
@@ -223,8 +234,22 @@ func lookupPath(rootMapping *yaml.Node, path string) (*yaml.Node, error) {
 			return nil, fmt.Errorf("error resolving %q at segment %q: %w", path, part, err)
 		}
 		if child == nil {
+			if path == "project_paths" && i == 0 {
+				keyNode := &yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Tag:   "!!str",
+					Value: "project_paths",
+				}
+				valNode := &yaml.Node{
+					Kind: yaml.SequenceNode,
+					Tag:  "!!seq",
+				}
+				rootMapping.Content = append(rootMapping.Content, keyNode, valNode)
+				return valNode, nil
+			}
 			return nil, fmt.Errorf("critical configuration key %q is missing or relocated", path)
 		}
+
 		if i == len(parts)-1 {
 			return child, nil
 		}

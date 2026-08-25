@@ -26,22 +26,30 @@ the **`find`** vulnerability scanner phase while establishing an extensible
 **Host $\\leftrightarrow$ Container Communication Protocol**:
 
 1. **Exact Subcommand Dispatch (`os.Args[1]`):** `cm-runner` requires an
-   explicit subcommand (`find`, `shell`) as `os.Args[1]`. Redundant `cm`
-   prefixes are rejected as errors.
-1. **Dedicated Structured JSON Output:** `cm-runner find` always emits pure,
-   machine-readable JSON on `stdout` by executing `cm report --format=json` in
-   Phase 2. It does not accept format flags (`--format`, `-f`).
+   explicit subcommand (`find`, `find-diff`, `shell`) as `os.Args[1]`. Redundant
+   `cm` prefixes are rejected as errors.
+
+1. **Dedicated Structured JSON Output:** `cm-runner find` and
+   `cm-runner find-diff` always emit pure, machine-readable JSON on `stdout` by
+   executing `cm report --format=json` in Phase 2. Format flags (`--format`,
+   `-f`) are rejected.
+
 1. **Clean `--` Delimiter Partitioning:** The CLI contract separates the
-   optional target path from unowned subprocess flags via `--`:
-   `cm-runner find [path] [-- <cm-find-flags...>]`.
+   optional target path or Git revisions from unowned subprocess flags via `--`:
+   `cm-runner find [path] [-- <cm-find-flags...>]` and
+   `cm-runner find-diff [git-diff-args...] [-- <cm-find-flags...>]`.
+
 1. **Two-Phase Scan & Report Orchestration:**
+
    - **Phase 1 (`cm find`):** Performs LLM-driven vulnerability discovery
-     against `/workspace` (with progress on `stderr`) and persists findings in
-     SQLite (`state.db`).
+     against `/workspace` or `/workspace/pull-request.diff` (with progress on
+     `stderr`) and persists findings in SQLite (`state.db`).
    - **Phase 2 (`cm report`):** Queries SQLite and emits structured JSON
      findings on `stdout`.
-1. **Finding-Aware Exit Codes:** `0` for clean codebases, `1` when findings are
-   detected, `2` for usage errors, `>2` for fatal errors.
+
+1. **Finding-Aware Exit Codes:** `0` for clean codebases or empty diffs, `1`
+   when findings are detected, `2` for usage/target errors, `>2` for fatal
+   errors.
 
 Dynamic exploit verification (`verify`) and patch remediation (`fix`) are
 explicitly scoped out of this design:
@@ -49,36 +57,50 @@ explicitly scoped out of this design:
 - `verify` requires repo-specific application runtime environments and will be
   addressed in a dedicated follow-up capability.
 - `fix` requires a dedicated finding import mechanism to populate CodeMender's
-  internal database prior to remediation and will also be handled in a separate
-  spec.
+  internal database prior to remediation and is handled in a separate spec.
 
 ### Goals
 
 - Establish an unambiguous, extensible Host $\\leftrightarrow$ Container
   Communication Protocol.
+
 - Implement a two-phase scan and report execution pipeline (`cm find`
   $\\rightarrow$ SQLite $\\rightarrow$ `cm report`).
+
 - Guarantee structured, machine-readable JSON output on `stdout`
   (`cm report --format=json`).
+
+- Support diff-scoped scanning via `find-diff` with repository-root staging,
+  disabled VCS reset, and grounded context prompt.
+
 - Forward unowned subprocess flags passed after `--` verbatim to `cm find`
   (`-c 5`, `-y`, `--unrestricted`).
+
 - Route all progress spinners, diagnostic logs, and session log paths strictly
   to `stderr`.
-- Support both full repository scans (`.`) and scoped sub-path scans (e.g.
-  `src/auth`) while always retaining full repository context in `/workspace`.
+
+- Support both full repository scans (`.`), scoped sub-path scans (e.g.
+  `src/auth`), and diff-scoped scans while always retaining full repository
+  context in `/workspace`.
+
 - Pre-initialize default configuration at container build time and establish
   headless configuration defaults (`.rs` extension inclusion,
   `output.format: json`, `tools.confirm_commands: false`,
   `tools.confirm_writes: false`) via a reusable configuration method so runtime
   `cm init` is never required and unattended scans run without interactive
   stalls.
-- Require an explicit subcommand (`find`, `shell`), rejecting ambiguous empty
-  invocations or `cm` prefixes with exit code 2.
+
+- Require an explicit subcommand (`find`, `find-diff`, `shell`), rejecting
+  ambiguous empty invocations or `cm` prefixes with exit code 2.
+
 - Provide interactive debugging support via `shell` with strict TTY validation.
+
 - Provide instant startup (\<1ms) and robust process group signal handling via a
   compiled Go entrypoint binary.
+
 - Support multi-mode authentication (ADC directory mount or
   `CLOUDSDK_AUTH_ACCESS_TOKEN` / `GOOGLE_APPLICATION_CREDENTIALS`).
+
 - Enforce strict unprivileged userspace execution (user `codemender`, UID 1000).
 
 ### Non-Goals
@@ -384,18 +406,44 @@ ______________________________________________________________________
      the build immediately if any critical option is missing, renamed, or
      relocated.
   1. Applies targeted overrides: appends `".rs"` to `scan.extensions.include`,
-     sets `output.format` to `"json"`, and sets `tools.confirm_commands` /
-     `tools.confirm_writes` to `false`.
+     sets `output.format` to `"json"`, sets `tools.confirm_commands` /
+     `tools.confirm_writes` to `false`, and adds `"/workspace"` to
+     `project_paths` (creating the array if commented out/missing).
   1. Preserves all other unmanaged and newly introduced upstream options without
      data loss.
 - **Rationale:** Creating configuration from scratch would tightly couple
   `cm-connect` to CodeMender's internal schema, requiring code modifications
   whenever CodeMender adds new options. Conversely, relying on `cm init` alone
   leaves interactive human prompts enabled (`confirm_commands: true`,
-  `confirm_writes: true`, `output.format: table`) that hang headless batch
-  pipelines on `stdin`. In-place AST mutation provides the minimal necessary
-  diff while fail-fast validation guarantees that any breaking upstream schema
-  changes are caught immediately at container build time.
+  `confirm_writes: true`, `output.format: table`) and restricts CodeMender's
+  sandbox root to individual target files during diff scanning. In-place AST
+  mutation provides the minimal necessary diff, ensures `/workspace` is included
+  in `project_paths` so CodeMender can inspect repository context during diff
+  scans, while fail-fast validation guarantees that any breaking upstream schema
+  drift is caught immediately at build time.
+
+### 4.8 Decision 8: Repository-Root Diff Staging, Disabled VCS Reset, and Grounded Context for `find-diff` (ADR-0007)
+
+- **Choice:** `cm-runner find-diff` implements a four-part strategy for
+  diff-scoped scanning:
+  1. **Workspace Root Staging:** Writes the generated Git diff directly to
+     `/workspace/pull-request.diff`.
+  1. **Disabled VCS Reset:** Mutates `$HOME/.codemender/config.yaml` via
+     `DisableReset()` to set `vcs.commands.reset: "true"`, suppressing
+     CodeMender's internal `git checkout HEAD -- . && git clean -fd` routine
+     during diff scanning.
+  1. **Grounded Context:** Injects the consolidated base context flag
+     `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context."`.
+  1. **Ephemeral Teardown:** Removes `/workspace/pull-request.diff` via deferred
+     cleanup immediately upon scan completion.
+- **Rationale:** CodeMender resolves its workspace boundary from the directory
+  path of the target argument (`filepath.Dir(target)`). When the diff is staged
+  in `/tmp`, CodeMender anchors to `/tmp` (which lacks repository files) and
+  attempts a failing VCS reset. By staging the diff inside `/workspace` as
+  `pull-request.diff` and disabling the VCS reset command, CodeMender anchors
+  directly at the repository root, retains the staged diff file during scanning,
+  and allows the LLM reasoning agent to inspect changed repository source files
+  in-place with full context.
 
 ______________________________________________________________________
 
@@ -481,43 +529,78 @@ ______________________________________________________________________
    `docker run --rm -v $(pwd):/workspace <image> find`; verify Phase 1 executes
    `cm find` (progress to `stderr`) and Phase 2 executes
    `cm report --format=json` (clean JSON to `stdout`).
+
 1. **Default Machine-Readable Output Test:** Pipe `stdout` directly to `jq .`;
    assert valid JSON with zero syntax errors.
+
 1. **Passthrough with Double-Dash Test:** Run
    `docker run -v $(pwd):/workspace <image> find src/auth -- -c 5 --unrestricted`;
    verify `cm find` receives `["src/auth", "-c", "5", "--unrestricted"]` and
    `cm report` receives `--format=json`.
+
 1. **Prefix Rejection Test:** Run `docker run <image> cm find`; assert exit code
    2 and `Error: unrecognized subcommand 'cm'`.
+
 1. **Clean Codebase Exit Code Test:** Scan clean codebase; verify exit code `0`
    and empty findings array.
+
 1. **Vulnerability Detection Exit Code Test:** Scan vulnerable codebase; verify
    exit code `1` and populated findings array.
+
 1. **Scoped Sub-Path Test:** Run
    `docker run -v $(pwd):/workspace <image> find src/auth`; verify targeted scan
    with workspace root preserved.
+
 1. **Invalid Sub-Path Test:** Run `docker run <image> find non/existent/path`;
    assert immediate exit code 2 and path error on `stderr`.
+
 1. **Missing TTY Test:** Run `docker run <image> shell` without `-it`; assert
    immediate exit code 2 and descriptive TTY error on `stderr`.
+
 1. **Interactive TTY Test:** Run `docker run -it <image> shell`; assert
    interactive `/bin/bash` prompt in `/workspace` as user `codemender`.
+
 1. **Build-Time Pre-Init Test:** Launch fresh container with only
    `-v $(pwd):/workspace`; execute `find` without `cm init` and assert scan
    succeeds.
+
 1. **Signal Handling Test:** Send `SIGINT`/`SIGTERM` to running container;
    verify clean shutdown within 500ms.
+
 1. **Unprivileged User Test:** Execute `docker run <image> id -u && id -g` to
    verify strict UID/GID 1000 enforcement.
+
 1. **Headless Config Overwrite Verification Test:** Inspect
    `/home/codemender/.codemender/config.yaml` in built container; verify
-   `scan.extensions.include` contains `".rs"`, `output.format` is `"json"`, and
-   `tools.confirm_commands` and `tools.confirm_writes` are both `false`.
+   `scan.extensions.include` contains `".rs"`, `output.format` is `"json"`,
+   `tools.confirm_commands` and `tools.confirm_writes` are both `false`, and
+   `project_paths` contains `"/workspace"`.
+
 1. **Unattended Execution Confirmation Test:** Verify tool invocations run
    without prompt blocking on `stdin`.
+
 1. **Unmanaged Upstream Option Passthrough Test:** Run mutator against a
    `config.yaml` containing unmanaged/new keys; verify all unmanaged keys and
    comments are preserved verbatim.
+
 1. **Critical Option Schema Drift Fail-Fast Test:** Run mutator against a
    `config.yaml` missing `tools.confirm_commands` or `output.format`; assert
    immediate non-zero exit code and descriptive missing-key error on `stderr`.
+
+1. **`find-diff` Execution and Workspace Root Staging Test:** Run
+   `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD~1 HEAD`; verify
+   Phase 1 executes `cm find /workspace/pull-request.diff` with
+   `vcs.commands.reset: "true"` and Phase 2 emits findings JSON to `stdout`.
+
+1. **`find-diff` Empty Diff Fast-Path Test:** Run
+   `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD HEAD`; verify
+   process immediately emits `[]` to `stdout` and exits cleanly with code 0.
+
+1. **`find-diff` Grounded Context Consolidation Test:** Run
+   `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD~1 HEAD -- -c "Extra check"`;
+   verify `cm find` receives
+   `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context. Extra check"`.
+
+1. **`find-diff` Post-Scan Cleanup Test:** Assert `/workspace/pull-request.diff`
+   does not exist after `find-diff` terminates, even if scanning encounters an
+   error.

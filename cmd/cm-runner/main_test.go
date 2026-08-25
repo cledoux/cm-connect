@@ -26,6 +26,10 @@ output:
 tools:
   confirm_commands: true
   confirm_writes: true
+vcs:
+  type: git
+  commands:
+    reset: "git checkout HEAD -- ."
 `
 
 func TestIsTerminal(t *testing.T) {
