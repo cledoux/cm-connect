@@ -45,7 +45,9 @@ RUN chmod +x /usr/local/bin/cm-runner
 RUN if ! getent group "${USER_GID}" >/dev/null 2>&1; then groupadd -g "${USER_GID}" codemender; fi \
     && if ! id -u "${USER_UID}" >/dev/null 2>&1; then useradd -u "${USER_UID}" -g "${USER_GID}" -m -s /bin/bash codemender; fi \
     && mkdir -p /workspace /home/codemender/.codemender \
-    && chown -R "${USER_UID}:${USER_GID}" /workspace /home/codemender
+    && chown -R "${USER_UID}:${USER_GID}" /workspace /home/codemender \
+    && chmod -R 777 /home/codemender /tmp
+
 
 # Configure system and global safe.directory to allow git operations on mounted repos across UIDs
 RUN git config --system --add safe.directory "*"

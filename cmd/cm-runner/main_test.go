@@ -697,3 +697,62 @@ func TestRun_FindDiff_ConfigMutationError(t *testing.T) {
 		t.Errorf("expected config mutation error on stderr, got: %s", stderr.String())
 	}
 }
+
+func TestRun_FindDiff_PermissionFallback(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	_ = os.MkdirAll(cmDir, 0755)
+	configPath := filepath.Join(cmDir, "config.yaml")
+	_ = os.WriteFile(configPath, []byte(sampleValidConfigForMainTest), 0600)
+
+	oldGitDiff := execGitDiffFn
+	defer func() { execGitDiffFn = oldGitDiff }()
+
+	sampleDiff := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-old\n+new\n"
+	execGitDiffFn = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		return []byte(sampleDiff), nil
+	}
+
+	mockCM := filepath.Join(tmpHome, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+cmd=""
+for arg in "$@"; do
+    case "$arg" in
+        find|report)
+            cmd="$arg"
+            break
+            ;;
+    esac
+done
+if [ "$cmd" = "find" ]; then
+    exit 0
+elif [ "$cmd" = "report" ]; then
+    echo '[]'
+    exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(mockCM, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write mock cm script: %v", err)
+	}
+
+	// Create a read-only workspace directory (mode 0555)
+	roWorkspace := filepath.Join(tmpHome, "ro-workspace")
+	if err := os.MkdirAll(roWorkspace, 0555); err != nil {
+		t.Fatalf("failed to create ro workspace: %v", err)
+	}
+	defer os.Chmod(roWorkspace, 0755) // allow cleanup
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "origin/main", "HEAD"}, strings.NewReader(""), &stdout, &stderr, roWorkspace, mockCM)
+	if code != cmrunner.ExitClean {
+		t.Fatalf("expected ExitClean (0) with permission fallback, got %d (stderr: %s)", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "[]" {
+		t.Errorf("expected empty array [] on stdout, got: %s", stdout.String())
+	}
+}
