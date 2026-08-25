@@ -216,16 +216,30 @@ ______________________________________________________________________
 
 ### Step 1: Install Workflow Template in Target Repository
 
-Use the provided `install.sh` script to copy the workflow template to your
-target repository:
+Use the provided `install.sh` script to build and push the container image to
+your target repository's GitHub Container Registry (GHCR) namespace and copy the
+templated workflow and companion scripts:
 
 ```bash
-# From the cm-connect repository:
-./github-actions/scripts/install.sh /path/to/target-repository
+# From the cm-connect repository (full automated build, GHCR push & install):
+./github-actions/install.sh /path/to/target-repository
+
+# Or skip local Docker building and GHCR push:
+./github-actions/install.sh --skip-build /path/to/target-repository
+
+# Or override the container image or repository slug:
+./github-actions/install.sh --image custom-registry.io/org/cm:v1 /path/to/target-repository
+./github-actions/install.sh --repo my-org/my-app /path/to/target-repository
 ```
 
-This copies `workflows/codemender.yml` into `.github/workflows/codemender.yml`
-in the target repository.
+This automatically discovers the target repository slug (`owner/repo`), logs
+into `ghcr.io` via `gh auth token`, compiles and builds the `cm-runner`
+container image with the OCI source label
+(`org.opencontainers.image.source=https://github.com/<owner>/<repo>`), pushes
+the image to `ghcr.io/<owner>/<repo>/cm-runner:latest`, templates
+`workflows/codemender.yml` with the resolved image tag into
+`<target-repo>/.github/workflows/codemender.yml`, and installs companion helper
+scripts into `<target-repo>/.github/scripts/`.
 
 ### Step 2: Provision GCP WIF & IAM via Terraform (Recommended) or Helper Script
 
@@ -281,9 +295,9 @@ ______________________________________________________________________
 ```
 github-actions/
 ├── README.md               # Quickstart onboarding and configuration guide
+├── install.sh              # One-command installer (builds/pushes image & templates workflow)
 ├── scripts/
 │   ├── filter_findings.jq  # jq filter for diff-scoped matrix partitioning
-│   ├── install.sh          # One-command installer copying workflow to target repo
 │   ├── publish_comments.py # PR inline suggestion and fallback comment publisher
 │   └── setup-wif.sh        # GCP IAM & WIF automated CLI setup script
 ├── terraform/              # Declarative GCP WIF & IAM Terraform module
