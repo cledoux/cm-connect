@@ -92,7 +92,7 @@ ______________________________________________________________________
 
 ## 2. End-to-End Workflow Architecture & Job DAG
 
-````mermaid
+```mermaid
 flowchart TD
     subgraph Trigger["1. Pull Request Trigger"]
         PR["Pull Request to main<br>(types: opened, synchronize, reopened)"]
@@ -109,8 +109,8 @@ flowchart TD
         MatrixGen["jq Dynamic Matrix Generator<br>outputs.findings_matrix = [...]"]
 
         Checkout --> WIFScan --> DockerFindDiff --> ExitTrap
-        ExitTrap -->|Code 0| CleanExit
-        ExitTrap -->|Code 1| FindingsExit --> MatrixGen
+        ExitTrap -->|"Code 0 (Clean)"| CleanExit
+        ExitTrap -->|"Code 1 (Findings)"| FindingsExit --> MatrixGen
     end
 
     subgraph FixMatrixJob["3. Parallel Fix Matrix Jobs (strategy: matrix)"]
@@ -130,19 +130,19 @@ flowchart TD
     subgraph ReviewBot["4. PR Review Suggestion Publisher"]
         direction TB
         DiffCheck{"Is hunk line range inside<br>commit.diff hunks?"}
-        PostInline["POST /repos/{owner}/{repo}/pulls/{id}/reviews<br>Inline ```suggestion``` block"]
-        PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level PR Comment with ```diff```"]
+        PostInline["POST /repos/{owner}/{repo}/pulls/{id}/reviews<br>Inline suggestion block"]
+        PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level PR Comment with diff"]
         StepSummary["Emit to $GITHUB_STEP_SUMMARY"]
 
         Fixed --> DiffCheck
-        DiffCheck -->|Yes (In-Diff)| PostInline
-        DiffCheck -->|No (Out-of-Diff)| PostFallback
+        DiffCheck -->|In-Diff| PostInline
+        DiffCheck -->|Out-of-Diff| PostFallback
         PostInline & PostFallback --> StepSummary
     end
 
     PR --> ScanJob
     MatrixGen -->|outputs.findings_matrix| FixMatrixJob
-````
+```
 
 ______________________________________________________________________
 

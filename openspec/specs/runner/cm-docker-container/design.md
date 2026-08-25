@@ -60,11 +60,11 @@ flowchart TD
         CM --> Toolchain
     end
 
-    WorkspaceDir -.->|Mount to /workspace (rw)| Container
-    StateDir -.->|Mount to /home/codemender/.codemender (rw)| Container
-    GCPAuth -.->|Mount to /home/codemender/.config/gcloud (ro)| Container
+    WorkspaceDir -.->|"Mount to /workspace (rw)"| Container
+    StateDir -.->|"Mount to /home/codemender/.codemender (rw)"| Container
+    GCPAuth -.->|"Mount to /home/codemender/.config/gcloud (ro)"| Container
     
-    CM -->|Direct HTTPS (Port 443)| Vertex["Vertex AI Backend<br>(aiplatform.googleapis.com)"]
+    CM -->|"Direct HTTPS (Port 443)"| Vertex["Vertex AI Backend<br>(aiplatform.googleapis.com)"]
 ```
 
 ______________________________________________________________________
@@ -162,7 +162,8 @@ clean: ## Remove the sandbox Docker image
 
 ### 5.2 Runtime Launcher (`bin/cm-sandbox`)
 
-The launcher script is dedicated strictly to running the prebuilt container image with userspace mounts:
+The launcher script is dedicated strictly to running the prebuilt container
+image with userspace mounts:
 
 ```bash
 #!/usr/bin/env bash
@@ -194,8 +195,8 @@ exec docker run ${DOCKER_TTY_FLAGS} --rm \
 ### 5.3 Developer Workflow
 
 1. **Build image**: `make build`
-2. **Launch sandbox**: `./bin/cm-sandbox`
-3. **Execute inside container**:
+1. **Launch sandbox**: `./bin/cm-sandbox`
+1. **Execute inside container**:
    ```bash
    codemender@container:/workspace$ cm init --verify
    codemender@container:/workspace$ cm find
