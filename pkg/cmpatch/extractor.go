@@ -194,15 +194,15 @@ func SynthesizeEnvelope(findingID, vulnType, title, summary, rawDiff string) (*C
 // with a fallback to directory diffing against fallbackDir if needed.
 func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string, error) {
 	// Check if git repository is present
-	checkGit := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree")
+	checkGit := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "rev-parse", "--is-inside-work-tree")
 	checkGit.Dir = workspaceDir
 	if err := checkGit.Run(); err == nil {
 		// Stage untracked files intent so new files appear in git diff
-		stageCmd := exec.CommandContext(ctx, "git", "add", "-N", ".")
+		stageCmd := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "add", "-N", ".")
 		stageCmd.Dir = workspaceDir
 		_ = stageCmd.Run()
 
-		diffCmd := exec.CommandContext(ctx, "git", "diff", "HEAD")
+		diffCmd := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "diff", "HEAD")
 		diffCmd.Dir = workspaceDir
 		out, err := diffCmd.Output()
 		if err == nil {
@@ -210,7 +210,7 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 		}
 
 		// Fallback to git diff (without HEAD in case no commits exist yet)
-		diffNoHead := exec.CommandContext(ctx, "git", "diff")
+		diffNoHead := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "diff")
 		diffNoHead.Dir = workspaceDir
 		outNoHead, errNoHead := diffNoHead.Output()
 		if errNoHead == nil {

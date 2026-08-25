@@ -47,8 +47,13 @@ RUN if ! getent group "${USER_GID}" >/dev/null 2>&1; then groupadd -g "${USER_GI
     && mkdir -p /workspace /home/codemender/.codemender \
     && chown -R "${USER_UID}:${USER_GID}" /workspace /home/codemender
 
+# Configure system and global safe.directory to allow git operations on mounted repos across UIDs
+RUN git config --system --add safe.directory "*"
+
 USER codemender
 WORKDIR /workspace
+
+RUN git config --global --add safe.directory "*"
 
 # Pre-initialize CodeMender configuration structures at build-time and apply headless defaults
 RUN cm init \
