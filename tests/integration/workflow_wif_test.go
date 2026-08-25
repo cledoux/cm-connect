@@ -196,8 +196,11 @@ func verifyDryRunOutput(t *testing.T, output, projectID, repo, poolName, provide
 	if !strings.Contains(output, "https://token.actions.githubusercontent.com") {
 		t.Errorf("missing issuer URI in output:\n%s", output)
 	}
-	if !strings.Contains(output, "google.subject=assertion.sub,attribute.repository=assertion.repository") {
+	if !strings.Contains(output, "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner") {
 		t.Errorf("missing attribute mapping in output:\n%s", output)
+	}
+	if !strings.Contains(output, "--attribute-condition=\"assertion.repository == '"+repo+"'\"") {
+		t.Errorf("missing attribute-condition in output:\n%s", output)
 	}
 
 	// REQ-0008.9: Service Account creation command

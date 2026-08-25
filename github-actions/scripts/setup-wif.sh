@@ -172,15 +172,15 @@ echo "Configuring Workload Identity Federation for ${GITHUB_REPO} on project ${P
 
 # 1. Create Workload Identity Pool [REQ-0008.7]
 run_step "Creating Workload Identity Pool (${POOL_NAME})" \
-  "gcloud iam workload-identity-pools create ${POOL_NAME} --project=\"${PROJECT_ID}\" --location=\"global\" --display-name=\"CodeMender Workload Identity Pool\""
+  "gcloud iam workload-identity-pools create ${POOL_NAME} --project=\"${PROJECT_ID}\" --location=\"global\" --display-name=\"CodeMender Identity Pool\""
 
 # 2. Create OIDC Provider [REQ-0008.8]
 run_step "Creating OIDC Workload Identity Provider (${PROVIDER_NAME})" \
-  "gcloud iam workload-identity-pools providers create-oidc ${PROVIDER_NAME} --project=\"${PROJECT_ID}\" --location=\"global\" --workload-identity-pool=\"${POOL_NAME}\" --issuer-uri=\"https://token.actions.githubusercontent.com\" --attribute-mapping=\"google.subject=assertion.sub,attribute.repository=assertion.repository\" --display-name=\"CodeMender GitHub OIDC Provider\""
+  "gcloud iam workload-identity-pools providers create-oidc ${PROVIDER_NAME} --project=\"${PROJECT_ID}\" --location=\"global\" --workload-identity-pool=\"${POOL_NAME}\" --issuer-uri=\"https://token.actions.githubusercontent.com\" --attribute-mapping=\"google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner\" --attribute-condition=\"assertion.repository == '${GITHUB_REPO}'\" --display-name=\"CodeMender GitHub Provider\""
 
 # 3. Create Service Account [REQ-0008.9]
 run_step "Creating Service Account (${SA_NAME})" \
-  "gcloud iam service-accounts create ${SA_NAME} --project=\"${PROJECT_ID}\" --display-name=\"CodeMender GitHub Actions Runner\""
+  "gcloud iam service-accounts create ${SA_NAME} --project=\"${PROJECT_ID}\" --display-name=\"CodeMender Runner\""
 
 # 4. Bind aiplatform.user to Service Account [REQ-0008.10]
 run_step "Binding roles/aiplatform.user on project to Service Account" \

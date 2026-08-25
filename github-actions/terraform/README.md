@@ -8,22 +8,28 @@ bindings for keyless GitHub Actions CI/CD workflows with CodeMender (`cm`).
 
 1. **`google_iam_workload_identity_pool`**: Global Workload Identity Pool
    (`codemender-pool`).
-2. **`google_iam_workload_identity_pool_provider`**: OIDC Provider linked to
+1. **`google_iam_workload_identity_pool_provider`**: OIDC Provider linked to
    `https://token.actions.githubusercontent.com` with `google.subject` and
    `attribute.repository` claim mappings.
-3. **`google_service_account`**: Dedicated runner service account
+1. **`google_service_account`**: Dedicated runner service account
    (`codemender-runner`).
-4. **`google_project_iam_member`**: Grants `roles/aiplatform.user` on the
+1. **`google_project_iam_member`**: Grants `roles/aiplatform.user` on the
    project to the service account.
-5. **`google_service_account_iam_member`**: Grants
-   `roles/iam.workloadIdentityUser` on the service account restricted strictly to
+1. **`google_service_account_iam_member`**: Grants
+   `roles/iam.workloadIdentityUser` on the service account restricted strictly
+   to
    `principalSet://iam.googleapis.com/<pool-name>/attribute.repository/<github-repo>`.
 
 ## Usage
 
 ### 1. Configure Variables
 
-Create a `terraform.tfvars` file or pass variables directly on the command line:
+Copy `terraform.tfvars.example` to `terraform.tfvars` and edit with your project
+details:
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
 
 ```hcl
 project_id  = "my-gcp-project"

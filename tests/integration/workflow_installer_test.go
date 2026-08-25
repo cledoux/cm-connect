@@ -552,3 +552,93 @@ func TestInstallerScriptPreflightFailureGuidance(t *testing.T) {
 		}
 	})
 }
+
+// Scenario 11: Verify pre-flight warning when gh token lacks write:packages scope.
+func TestInstallerScriptMissingScopeWarning(t *testing.T) {
+	repoRoot := getRepoRoot(t)
+	installScript := getInstallScriptPath(t)
+	targetDir := createGitRepoWithRemote(t, "git@github.com:prod-team/main-service.git")
+
+	mockBinDir := t.TempDir()
+	mockDocker := filepath.Join(mockBinDir, "docker")
+	dockerScript := "#!/usr/bin/env bash\nexit 0\n"
+	if err := os.WriteFile(mockDocker, []byte(dockerScript), 0755); err != nil {
+		t.Fatalf("failed to write mock docker: %v", err)
+	}
+	mockGH := filepath.Join(mockBinDir, "gh")
+	ghScript := `#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
+  echo "mock_token"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  echo "Logged in to github.com account testuser"
+  echo "Token scopes: 'repo', 'read:org'"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(mockGH, []byte(ghScript), 0755); err != nil {
+		t.Fatalf("failed to write mock gh: %v", err)
+	}
+
+	currentPath := os.Getenv("PATH")
+	customEnv := append(os.Environ(), "PATH="+mockBinDir+":"+currentPath)
+
+	stdout, stderr, exitCode := runCommandWithEnv(t, 5*time.Second, repoRoot, nil, customEnv, installScript, targetDir)
+	if exitCode != 0 {
+		t.Fatalf("expected script to succeed with warning, got exit code %d: %s", exitCode, stderr)
+	}
+	combined := stdout + stderr
+	if !strings.Contains(combined, "write:packages") || !strings.Contains(combined, "gh auth refresh") {
+		t.Errorf("expected warning mentioning write:packages and gh auth refresh, got: %s", combined)
+	}
+}
+
+// Scenario 12: Verify docker push failure outputs actionable gh auth refresh guidance.
+func TestInstallerScriptPushFailureGuidance(t *testing.T) {
+	repoRoot := getRepoRoot(t)
+	installScript := getInstallScriptPath(t)
+	targetDir := createGitRepoWithRemote(t, "git@github.com:prod-team/main-service.git")
+
+	mockBinDir := t.TempDir()
+	mockDocker := filepath.Join(mockBinDir, "docker")
+	dockerScript := `#!/usr/bin/env bash
+if [ "$1" = "push" ]; then
+  echo "denied: permission_denied: The token provided does not match expected scopes." >&2
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(mockDocker, []byte(dockerScript), 0755); err != nil {
+		t.Fatalf("failed to write mock docker: %v", err)
+	}
+	mockGH := filepath.Join(mockBinDir, "gh")
+	ghScript := `#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
+  echo "mock_token"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  echo "Logged in to github.com account testuser"
+  echo "Token scopes: 'write:packages'"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(mockGH, []byte(ghScript), 0755); err != nil {
+		t.Fatalf("failed to write mock gh: %v", err)
+	}
+
+	currentPath := os.Getenv("PATH")
+	customEnv := append(os.Environ(), "PATH="+mockBinDir+":"+currentPath)
+
+	stdout, stderr, exitCode := runCommandWithEnv(t, 5*time.Second, repoRoot, nil, customEnv, installScript, targetDir)
+	if exitCode == 0 {
+		t.Fatalf("expected install.sh to fail when docker push fails, got exit code 0: %s", stdout)
+	}
+	combined := stdout + stderr
+	if !strings.Contains(combined, "write:packages") || !strings.Contains(combined, "gh auth refresh -s write:packages") {
+		t.Errorf("expected push failure guidance mentioning gh auth refresh -s write:packages, got: %s", combined)
+	}
+}

@@ -15,9 +15,9 @@ variable "pool_id" {
 }
 
 variable "pool_display_name" {
-  description = "Display name of the Workload Identity Pool."
+  description = "Display name of the Workload Identity Pool (max 32 chars)."
   type        = string
-  default     = "CodeMender Workload Identity Pool"
+  default     = "CodeMender Identity Pool"
 }
 
 variable "provider_id" {
@@ -27,9 +27,9 @@ variable "provider_id" {
 }
 
 variable "provider_display_name" {
-  description = "Display name of the Workload Identity Pool Provider."
+  description = "Display name of the Workload Identity Pool Provider (max 32 chars)."
   type        = string
-  default     = "CodeMender GitHub Actions OIDC Provider"
+  default     = "CodeMender GitHub Provider"
 }
 
 variable "sa_name" {
@@ -41,5 +41,5 @@ variable "sa_name" {
 variable "sa_display_name" {
   description = "Display name of the CodeMender Service Account."
   type        = string
-  default     = "CodeMender GitHub Actions Runner"
+  default     = "CodeMender Runner"
 }
