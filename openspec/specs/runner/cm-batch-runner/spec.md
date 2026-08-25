@@ -535,7 +535,7 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
    be forwarded directly to `git diff` inside `/workspace` (supporting ref
    pairs, triple-dot ranges, or defaulting to `HEAD` if omitted).
 1. **Repository-Root Diff Staging:** The generated diff MUST be written directly
-   to the root of the target repository (`/workspace/.codemender-diff.diff`).
+   to the root of the target repository (`/workspace/pull-request.diff`).
    Placing the diff in the repository root ensures CodeMender anchors its
    workspace context at `/workspace`, enabling the scan reasoning engine to
    inspect changed repository source files directly.
@@ -544,12 +544,12 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
    `pkg/cmconfig` to:
    - Append `".diff"` to `scan.extensions.include` so CodeMender scans the
      staged patch file.
-   - Disable VCS workspace reset exclusively during diff scanning by setting
-     `vcs.commands.reset` to `"true"`, preventing CodeMender's pre-scan cleanup
-     from wiping out the staged diff file.
+   - Disable VCS workspace reset exclusively during diff scanning by calling
+     `DisableReset()` (`vcs.commands.reset: "true"`), preventing CodeMender's
+     pre-scan cleanup from wiping out the staged diff file.
 1. **Context Prompt Consolidation & Repository Grounding:** `cm-runner` MUST
    inject the base context flag
-   `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository."`.
+   `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context."`.
    If the caller provides custom `-c` or `--context` flags after `--`,
    `cm-runner` MUST merge them into a single consolidated `--context` argument
    and strip the standalone user flag from passthrough args.
@@ -561,7 +561,7 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
    `stderr` advising repository history configuration (e.g. `fetch-depth: 0`)
    and terminate with exit code `2`.
 1. **Ephemeral Teardown:** Upon completion of Phase 1 and Phase 2, `find-diff`
-   MUST remove the staged diff file (`/workspace/.codemender-diff.diff`),
+   MUST remove the staged diff file (`/workspace/pull-request.diff`),
    guaranteeing zero untracked file residue in the repository.
 
 #### Scenario: Execute find-diff on modified PR commits
@@ -570,13 +570,13 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
   and `HEAD`
 - **WHEN** executing `cm-runner find-diff origin/main HEAD`
 - **THEN** `cm-runner` MUST execute `git diff origin/main HEAD` into
-  `/workspace/.codemender-diff.diff`
+  `/workspace/pull-request.diff`
 - **AND** mutate `$HOME/.codemender/config.yaml` to include `.diff` and set
   `vcs.commands.reset` to `"true"`
 - **AND** execute
-  `cm find /workspace/.codemender-diff.diff -y --context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository."`
+  `cm find /workspace/pull-request.diff -y --context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context."`
 - **AND** emit structured findings JSON to `stdout`
-- **AND** remove `/workspace/.codemender-diff.diff` upon exit.
+- **AND** remove `/workspace/pull-request.diff` upon exit.
 
 #### Scenario: Short-circuit on empty git diff
 
@@ -591,7 +591,7 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
   `cm-runner find-diff origin/main HEAD -- -c "Focus on SQL injection"`
 - **WHEN** `cm-runner` prepares the find command
 - **THEN** `cm find` MUST receive
-  `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository. Focus on SQL injection"`.
+  `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context. Focus on SQL injection"`.
 
 #### Scenario: Fail fast on invalid git revisions
 

@@ -112,6 +112,58 @@ func (c *Config) AppendExtension(ext string) error {
 	})
 }
 
+// DisableReset sets vcs.commands.reset to "true" to suppress CodeMender's
+// pre-scan VCS reset during diff scanning.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func (c *Config) DisableReset() error {
+	if c.root.Kind != yaml.DocumentNode || len(c.root.Content) == 0 {
+		return errors.New("invalid or empty YAML document root")
+	}
+	rootMapping := c.root.Content[0]
+	if rootMapping.Kind != yaml.MappingNode {
+		return fmt.Errorf("root node is not a mapping (got kind %v)", rootMapping.Kind)
+	}
+
+	vcsNode := ensureMappingChild(rootMapping, "vcs")
+	commandsNode := ensureMappingChild(vcsNode, "commands")
+
+	for i := 0; i < len(commandsNode.Content); i += 2 {
+		if commandsNode.Content[i].Value == "reset" {
+			commandsNode.Content[i+1].Kind = yaml.ScalarNode
+			commandsNode.Content[i+1].Tag = "!!str"
+			commandsNode.Content[i+1].Value = "true"
+			return nil
+		}
+	}
+
+	commandsNode.Content = append(commandsNode.Content,
+		&yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: "reset",
+		},
+		&yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: "true",
+		},
+	)
+	return nil
+}
+
+// DisableReset loads the default CodeMender configuration file, disables VCS reset in-place, and writes it back.
+// Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
+func DisableReset() error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if err := cfg.DisableReset(); err != nil {
+		return err
+	}
+	return cfg.Write()
+}
+
 // bytes serializes the mutated YAML document back to formatted bytes.
 // Governing: REQ-0002, ADR-0007, SPEC-cm-batch-runner
 func (c *Config) bytes() ([]byte, error) {
@@ -210,6 +262,29 @@ func findMappingChild(mappingNode *yaml.Node, key string) (*yaml.Node, error) {
 		}
 	}
 	return nil, nil
+}
+
+// ensureMappingChild returns the child MappingNode matching key, creating it if not present.
+func ensureMappingChild(mappingNode *yaml.Node, key string) *yaml.Node {
+	for i := 0; i < len(mappingNode.Content); i += 2 {
+		if mappingNode.Content[i].Value == key {
+			if i+1 < len(mappingNode.Content) && mappingNode.Content[i+1].Kind == yaml.MappingNode {
+				return mappingNode.Content[i+1]
+			}
+		}
+	}
+
+	keyNode := &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: key,
+	}
+	valNode := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Tag:  "!!map",
+	}
+	mappingNode.Content = append(mappingNode.Content, keyNode, valNode)
+	return valNode
 }
 
 // lookupPath traverses a YAML document tree following dot-separated path components.

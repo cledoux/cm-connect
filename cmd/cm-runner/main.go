@@ -95,9 +95,10 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
 		return cmrunner.ExitError
 	}
-	_ = cfg.ApplyOverrides(map[string]any{
-		"vcs.commands.reset": "true",
-	})
+	if err := cfg.DisableReset(); err != nil {
+		fmt.Fprintf(stderr, "Error: failed to disable VCS reset in configuration: %v\n", err)
+		return cmrunner.ExitError
+	}
 	if err := cfg.Write(); err != nil {
 		fmt.Fprintf(stderr, "Error: failed to register .diff extension in configuration: %v\n", err)
 		return cmrunner.ExitError

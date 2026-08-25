@@ -28,20 +28,25 @@ the **`find`** vulnerability scanner phase while establishing an extensible
 1. **Exact Subcommand Dispatch (`os.Args[1]`):** `cm-runner` requires an
    explicit subcommand (`find`, `find-diff`, `shell`) as `os.Args[1]`. Redundant
    `cm` prefixes are rejected as errors.
+
 1. **Dedicated Structured JSON Output:** `cm-runner find` and
    `cm-runner find-diff` always emit pure, machine-readable JSON on `stdout` by
    executing `cm report --format=json` in Phase 2. Format flags (`--format`,
    `-f`) are rejected.
+
 1. **Clean `--` Delimiter Partitioning:** The CLI contract separates the
    optional target path or Git revisions from unowned subprocess flags via `--`:
    `cm-runner find [path] [-- <cm-find-flags...>]` and
    `cm-runner find-diff [git-diff-args...] [-- <cm-find-flags...>]`.
+
 1. **Two-Phase Scan & Report Orchestration:**
+
    - **Phase 1 (`cm find`):** Performs LLM-driven vulnerability discovery
-     against `/workspace` or `/workspace/.codemender-diff.diff` (with progress
-     on `stderr`) and persists findings in SQLite (`state.db`).
+     against `/workspace` or `/workspace/pull-request.diff` (with progress on
+     `stderr`) and persists findings in SQLite (`state.db`).
    - **Phase 2 (`cm report`):** Queries SQLite and emits structured JSON
      findings on `stdout`.
+
 1. **Finding-Aware Exit Codes:** `0` for clean codebases or empty diffs, `1`
    when findings are detected, `2` for usage/target errors, `>2` for fatal
    errors.
@@ -418,22 +423,23 @@ ______________________________________________________________________
 - **Choice:** `cm-runner find-diff` implements a four-part strategy for
   diff-scoped scanning:
   1. **Workspace Root Staging:** Writes the generated Git diff directly to
-     `/workspace/.codemender-diff.diff`.
-  1. **Disabled VCS Reset:** Mutates `$HOME/.codemender/config.yaml` to set
-     `vcs.commands.reset: "true"`, suppressing CodeMender's internal
-     `git checkout HEAD -- . && git clean -fd` routine during diff scanning.
+     `/workspace/pull-request.diff`.
+  1. **Disabled VCS Reset:** Mutates `$HOME/.codemender/config.yaml` via
+     `DisableReset()` to set `vcs.commands.reset: "true"`, suppressing
+     CodeMender's internal `git checkout HEAD -- . && git clean -fd` routine
+     during diff scanning.
   1. **Grounded Context:** Injects the consolidated base context flag
-     `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository."`.
-  1. **Ephemeral Teardown:** Removes `/workspace/.codemender-diff.diff` via
-     deferred cleanup immediately upon scan completion.
+     `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context."`.
+  1. **Ephemeral Teardown:** Removes `/workspace/pull-request.diff` via deferred
+     cleanup immediately upon scan completion.
 - **Rationale:** CodeMender resolves its workspace boundary from the directory
   path of the target argument (`filepath.Dir(target)`). When the diff is staged
   in `/tmp`, CodeMender anchors to `/tmp` (which lacks repository files) and
-  attempts a failing VCS reset. By staging the diff inside `/workspace` and
-  disabling the VCS reset command, CodeMender anchors directly at the repository
-  root, retains the staged diff file during scanning, and allows the LLM
-  reasoning agent to inspect changed repository source files in-place with full
-  context.
+  attempts a failing VCS reset. By staging the diff inside `/workspace` as
+  `pull-request.diff` and disabling the VCS reset command, CodeMender anchors
+  directly at the repository root, retains the staged diff file during scanning,
+  and allows the LLM reasoning agent to inspect changed repository source files
+  in-place with full context.
 
 ______________________________________________________________________
 
@@ -561,7 +567,7 @@ ______________________________________________________________________
    immediate non-zero exit code and descriptive missing-key error on `stderr`.
 1. **`find-diff` Execution and Workspace Root Staging Test:** Run
    `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD~1 HEAD`; verify
-   Phase 1 executes `cm find /workspace/.codemender-diff.diff` with
+   Phase 1 executes `cm find /workspace/pull-request.diff` with
    `vcs.commands.reset: "true"` and Phase 2 emits findings JSON to `stdout`.
 1. **`find-diff` Empty Diff Fast-Path Test:** Run
    `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD HEAD`; verify
@@ -569,7 +575,7 @@ ______________________________________________________________________
 1. **`find-diff` Grounded Context Consolidation Test:** Run
    `docker run --rm -v $(pwd):/workspace <image> find-diff HEAD~1 HEAD -- -c "Extra check"`;
    verify `cm find` receives
-   `--context="The target is a Git unified diff for this repository. You are executing in the root directory of the repository. Extra check"`.
-1. **`find-diff` Post-Scan Cleanup Test:** Assert
-   `/workspace/.codemender-diff.diff` does not exist after `find-diff`
-   terminates, even if scanning encounters an error.
+   `--context="You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context. Extra check"`.
+1. **`find-diff` Post-Scan Cleanup Test:** Assert `/workspace/pull-request.diff`
+   does not exist after `find-diff` terminates, even if scanning encounters an
+   error.

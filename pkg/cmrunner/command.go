@@ -190,15 +190,15 @@ func (c *ImportCommand) Cmd() []string {
 
 // DefaultDiffFilename defines the default staging file name in the workspace root.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-const DefaultDiffFilename = ".codemender-diff.diff"
+const DefaultDiffFilename = "pull-request.diff"
 
 // DefaultDiffPath defines the default staging path in /workspace.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-const DefaultDiffPath = "/workspace/.codemender-diff.diff"
+const DefaultDiffPath = "/workspace/pull-request.diff"
 
 // BaseDiffContext defines the default context prompt grounding CodeMender in diff scanning.
 // Governing: ADR-0007, SPEC-cm-batch-runner, REQ-0014
-const BaseDiffContext = "The target is a Git unified diff for this repository. You are executing in the root directory of the repository."
+const BaseDiffContext = "You are evaluating a change request. The target is the unified diff containing the change. You are executing in the root directory of the repository and so have access to any repo files you need for context."
 
 // ConsolidateContext merges the base diff context prompt with any user-supplied
 // context flags (-c or --context), stripping standalone user context flags from the

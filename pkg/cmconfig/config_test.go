@@ -480,3 +480,97 @@ func TestDefaultConfigPath(t *testing.T) {
 		t.Errorf("expected error when HOME unset, got nil")
 	}
 }
+
+func TestConfig_DisableReset(t *testing.T) {
+	t.Run("disables reset on config without vcs section", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
+		}
+
+		if err := cfg.DisableReset(); err != nil {
+			t.Fatalf("unexpected DisableReset error: %v", err)
+		}
+
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read back config: %v", err)
+		}
+		if !strings.Contains(string(data), `reset: "true"`) && !strings.Contains(string(data), `reset: true`) {
+			t.Errorf("expected config to contain reset: true, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("updates existing vcs reset command", func(t *testing.T) {
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "config.yaml")
+		vcsConfig := `
+vcs:
+  type: git
+  commands:
+    reset: "git checkout HEAD -- ."
+`
+		if err := os.WriteFile(configPath, []byte(vcsConfig), 0o600); err != nil {
+			t.Fatalf("failed to write test config: %v", err)
+		}
+
+		cfg, err := LoadConfigFile(configPath)
+		if err != nil {
+			t.Fatalf("unexpected LoadConfigFile error: %v", err)
+		}
+
+		if err := cfg.DisableReset(); err != nil {
+			t.Fatalf("unexpected DisableReset error: %v", err)
+		}
+
+		if err := cfg.Write(); err != nil {
+			t.Fatalf("unexpected Write error: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("failed to read back config: %v", err)
+		}
+		if !strings.Contains(string(data), `reset: "true"`) && !strings.Contains(string(data), `reset: true`) {
+			t.Errorf("expected config to contain reset: true, got:\n%s", string(data))
+		}
+	})
+}
+
+func TestDisableReset_TopLevel(t *testing.T) {
+	tempDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tempDir)
+
+	cmDir := filepath.Join(tempDir, ".codemender")
+	if err := os.MkdirAll(cmDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	configPath := filepath.Join(cmDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(sampleValidConfig), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	if err := DisableReset(); err != nil {
+		t.Fatalf("unexpected DisableReset error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read back config: %v", err)
+	}
+	if !strings.Contains(string(data), `reset: "true"`) && !strings.Contains(string(data), `reset: true`) {
+		t.Errorf("expected config to contain reset: true, got:\n%s", string(data))
+	}
+}
