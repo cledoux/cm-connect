@@ -149,7 +149,7 @@ flowchart TD
 
     %% Phase 1 Execution
     Preconfig -.->|Provides default DB/config| CMFind
-    CMFind -->|Direct HTTPS (Port 443)| Vertex
+    CMFind -->|"Direct HTTPS (Port 443)"| Vertex
     CMFind -->|Writes findings| SQLiteDB
     CMFind -->|stderr: Scanning progress & logs| StderrPipe
 
