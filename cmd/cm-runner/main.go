@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -16,7 +18,52 @@ import (
 	"cm-connect/pkg/cmrunner"
 )
 
+// init ensures GOOGLE_CLOUD_PROJECT is populated from GCP credentials file if unset.
+func init() {
+	ensureProjectEnv()
+}
+
+// ensureProjectEnv populates GOOGLE_CLOUD_PROJECT from the credentials JSON file if not already set.
+func ensureProjectEnv() {
+	if strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT")) != "" && strings.TrimSpace(os.Getenv("CLOUDSDK_CORE_PROJECT")) != "" {
+		return
+	}
+
+	credPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	if strings.TrimSpace(credPath) == "" {
+		return
+	}
+
+	data, err := os.ReadFile(credPath)
+	if err != nil {
+		return
+	}
+
+	// Simple extraction of "project_id" or "quota_project_id" from credentials JSON without full struct parsing.
+	var credMap map[string]interface{}
+	if err := json.Unmarshal(data, &credMap); err != nil {
+		return
+	}
+
+	var projectID string
+	if p, ok := credMap["project_id"].(string); ok && strings.TrimSpace(p) != "" {
+		projectID = p
+	} else if p, ok := credMap["quota_project_id"].(string); ok && strings.TrimSpace(p) != "" {
+		projectID = p
+	}
+
+	if projectID != "" {
+		if strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT")) == "" {
+			_ = os.Setenv("GOOGLE_CLOUD_PROJECT", projectID)
+		}
+		if strings.TrimSpace(os.Getenv("CLOUDSDK_CORE_PROJECT")) == "" {
+			_ = os.Setenv("CLOUDSDK_CORE_PROJECT", projectID)
+		}
+	}
+}
+
 // isTerminal returns true if the given reader is an interactive character device terminal (TTY).
+
 // Governing: ADR-0001, SPEC-cm-batch-runner, REQ-0009
 func isTerminal(r io.Reader) bool {
 	if f, ok := r.(*os.File); ok {
