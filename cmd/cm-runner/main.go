@@ -117,18 +117,8 @@ func runFindDiff(ctx context.Context, plan DispatchPlan, stdin io.Reader, stdout
 
 	diffPath := filepath.Join(workspaceDir, cmrunner.DefaultDiffFilename)
 	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
-		if os.IsPermission(err) {
-			fallbackPath := filepath.Join(os.TempDir(), cmrunner.DefaultDiffFilename)
-			if fbErr := os.WriteFile(fallbackPath, diffBytes, 0o600); fbErr == nil {
-				diffPath = fallbackPath
-			} else {
-				fmt.Fprintf(stderr, "Error: failed to write staged diff file %q: %v (fallback %q: %v)\n", diffPath, err, fallbackPath, fbErr)
-				return cmrunner.ExitError
-			}
-		} else {
-			fmt.Fprintf(stderr, "Error: failed to write staged diff file %q: %v\n", diffPath, err)
-			return cmrunner.ExitError
-		}
+		fmt.Fprintf(stderr, "Error: failed to write staged diff file %q: %v\n", diffPath, err)
+		return cmrunner.ExitError
 	}
 	defer func() {
 		if err := os.Remove(diffPath); err != nil && !os.IsNotExist(err) {
