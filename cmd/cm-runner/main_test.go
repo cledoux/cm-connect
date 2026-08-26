@@ -717,15 +717,14 @@ func TestRun_FindDiff_WriteError(t *testing.T) {
 		return []byte(sampleDiff), nil
 	}
 
-	// Create a read-only workspace directory (mode 0555)
-	roWorkspace := filepath.Join(tmpHome, "ro-workspace")
-	if err := os.MkdirAll(roWorkspace, 0555); err != nil {
-		t.Fatalf("failed to create ro workspace: %v", err)
+	// Point workspaceDir to a regular file instead of a directory so os.WriteFile returns ENOTDIR across all users and root.
+	invalidWorkspace := filepath.Join(tmpHome, "invalid-workspace-file")
+	if err := os.WriteFile(invalidWorkspace, []byte("not a dir"), 0644); err != nil {
+		t.Fatalf("failed to create invalid workspace file: %v", err)
 	}
-	defer os.Chmod(roWorkspace, 0755) // allow cleanup
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"find-diff", "origin/main", "HEAD"}, strings.NewReader(""), &stdout, &stderr, roWorkspace, "/bin/true")
+	code := run([]string{"find-diff", "origin/main", "HEAD"}, strings.NewReader(""), &stdout, &stderr, invalidWorkspace, "/bin/true")
 	if code != cmrunner.ExitError {
 		t.Fatalf("expected ExitError (>2) when staged diff cannot be written, got %d (stderr: %s)", code, stderr.String())
 	}
