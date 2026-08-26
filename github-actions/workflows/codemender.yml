@@ -154,12 +154,15 @@ jobs:
 
       - name: "Remediate finding via CodeMender Fix Runner"
         id: fix
+        env:
+          FINDING_PAYLOAD: ${{ toJson(matrix.finding.payload) }}
         run: |
           mkdir -p .codemender-out
-          echo '${{ toJson(matrix.finding.payload) }}' > .codemender-out/finding.json
+          echo "$FINDING_PAYLOAD" > .codemender-out/finding.json
 
           set +e
           cat .codemender-out/finding.json | docker run --rm -i \
+
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --security-opt apparmor=unconfined \
