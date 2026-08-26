@@ -189,7 +189,7 @@ func TestWorkflow_ScanJobDefinition(t *testing.T) {
 				t.Errorf("scan checkout step fetch-depth = %q, want '0'", step.With["fetch-depth"])
 			}
 		}
-		if strings.Contains(step.Run, "commit.diff") {
+		if step.Name == "Extract Pull Request diff" {
 			hasDiffExtract = true
 		}
 		if strings.HasPrefix(step.Uses, "google-github-actions/auth@v2") {
