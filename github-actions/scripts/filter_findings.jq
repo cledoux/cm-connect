@@ -47,7 +47,7 @@ def parse_diff($diff_text):
 | (if . == null then [] else . end)
 | map(
     . as $finding
-    | ($finding.FilePath // $finding.file_path // "") as $fp
+    | (($finding.FilePath // $finding.file_path // "") | sub("^/workspace/?"; "") | sub("^\\./"; "") | sub("^/"; "")) as $fp
     | ($finding.StartLine // $finding.line // 1) as $f_start
     | ($finding.EndLine // $finding.end_line // $f_start) as $f_end
     | select(
@@ -55,7 +55,7 @@ def parse_diff($diff_text):
           ($mode != "preexisting")
         else
           ($ranges | any(
-            .file == $fp and
+            (.file | sub("^\\./"; "") | sub("^/"; "")) == $fp and
             $f_start <= .end and
             $f_end >= .start
           )) as $in_diff
@@ -67,6 +67,7 @@ def parse_diff($diff_text):
         end
       )
   )
+
 | sort_by(-((.Severity // .severity // "") | severity_rank))
 | (($ARGS.named.max // $ARGS.named.max_findings // null) as $limit
    | if $limit != null and ($limit | type == "number") and $limit >= 0 then
