@@ -197,3 +197,26 @@ func TestWorkflow_FilterEmptyDiff(t *testing.T) {
 		t.Fatalf("expected 0 matrix items for empty diff, got %d", len(items))
 	}
 }
+
+// Scenario 7: Filter out-of-diff potentially preexisting findings (REQ-0004)
+func TestWorkflow_FilterPreexistingMode(t *testing.T) {
+	dir := getWorkflowFixturesDir(t)
+	diffPath := filepath.Join(dir, "commit.diff")
+	findingsPath := filepath.Join(dir, "findings_mixed.json")
+
+	items := runFilterFindingsJQ(t, diffPath, findingsPath, "--arg", "mode", "preexisting")
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 preexisting items, got %d: %+v", len(items), items)
+	}
+
+	// findings_mixed.json has 2 out-of-diff findings:
+	// 1. legacy/db.go:120 (HIGH)
+	// 2. pkg/auth/store.go:150 (LOW)
+	if items[0].FilePath != "legacy/db.go" || items[0].StartLine != 120 {
+		t.Errorf("items[0] mismatch: %+v", items[0])
+	}
+	if items[1].FilePath != "pkg/auth/store.go" || items[1].StartLine != 150 {
+		t.Errorf("items[1] mismatch: %+v", items[1])
+	}
+}

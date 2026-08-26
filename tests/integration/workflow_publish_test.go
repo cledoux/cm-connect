@@ -204,6 +204,7 @@ func TestWorkflow_PublishComments(t *testing.T) {
 	t.Run("UnresolvedFinding", testWorkflowPublishUnresolvedFinding)
 	t.Run("StepSummaryGeneration", testWorkflowPublishStepSummary)
 	t.Run("DualExecutionMode", testWorkflowPublishDualExecutionMode)
+	t.Run("AdvisoryFindings", testWorkflowPublishAdvisoryFindings)
 }
 
 // Scenario 1: Publish single-line review suggestion comment (REQ-0006, REQ-TEST.2)
@@ -433,5 +434,105 @@ func testWorkflowPublishDualExecutionMode(t *testing.T) {
 	}
 	if !strings.Contains(scriptStr, "def publish_comments(") {
 		t.Errorf("publish_comments.py missing publish_comments entrypoint function")
+	}
+}
+
+// Scenario 7: Publish advisory non-blocking comments for preexisting findings (REQ-0004, REQ-0007)
+func testWorkflowPublishAdvisoryFindings(t *testing.T) {
+	scriptPath := getPublishScriptPath(t)
+	tempDir := t.TempDir()
+	summaryFile := filepath.Join(tempDir, "step_summary.md")
+
+	preexistingFile := filepath.Join(tempDir, "preexisting.json")
+	preexistingContent := `[
+		{
+			"finding_id": "123a4567-c05a-5258-99ac-bb9e932374c9",
+			"file_path": "legacy/db.go",
+			"start_line": 120,
+			"severity": "HIGH",
+			"title": "Hardcoded Database Password",
+			"payload": {
+				"FilePath": "legacy/db.go",
+				"StartLine": 120,
+				"Title": "Hardcoded Database Password",
+				"Analysis": "Hardcoded database password found in untouched legacy database helper file.",
+				"Severity": "HIGH",
+				"VulnType": "HARDCODED_CREDENTIALS"
+			}
+		}
+	]`
+	if err := os.WriteFile(preexistingFile, []byte(preexistingContent), 0644); err != nil {
+		t.Fatalf("failed to write preexisting fixture: %v", err)
+	}
+
+	var mu sync.Mutex
+	var issueCalls []issueCommentCall
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusBadRequest)
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "/issues/100/comments") {
+			var call issueCommentCall
+			if err := json.Unmarshal(bodyBytes, &call); err != nil {
+				http.Error(w, "invalid json body", http.StatusBadRequest)
+				return
+			}
+			issueCalls = append(issueCalls, call)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 2, "status": "created"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "python3", scriptPath, "--advisory", preexistingFile)
+	cmd.Env = append(os.Environ(),
+		"GITHUB_TOKEN=test-token",
+		"GITHUB_REPOSITORY=test-owner/test-repo",
+		"PR_NUMBER=100",
+		"GITHUB_API_URL="+server.URL,
+		"GITHUB_STEP_SUMMARY="+summaryFile,
+	)
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+	err := cmd.Run()
+	if err != nil {
+		t.Fatalf("script execution failed: %v, stderr: %s", err, stderrBuf.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(issueCalls) != 1 {
+		t.Fatalf("expected 1 issue comment call, got %d", len(issueCalls))
+	}
+	if !strings.Contains(issueCalls[0].Body, "Potentially Preexisting Security Finding") {
+		t.Errorf("issue comment body missing Potentially Preexisting headline: %s", issueCalls[0].Body)
+	}
+	if !strings.Contains(issueCalls[0].Body, "Non-Blocking") {
+		t.Errorf("issue comment body missing Non-Blocking label: %s", issueCalls[0].Body)
+	}
+
+	summaryBytes, err := os.ReadFile(summaryFile)
+	if err != nil {
+		t.Fatalf("failed to read step summary: %v", err)
+	}
+	summaryStr := string(summaryBytes)
+	if !strings.Contains(summaryStr, "Potentially Preexisting Security Finding") {
+		t.Errorf("summary missing Potentially Preexisting headline: %s", summaryStr)
 	}
 }

@@ -43,6 +43,7 @@ def parse_diff($diff_text):
 
 ($ARGS.named.diff // null) as $raw_diff
 | (if $raw_diff != null then parse_diff($raw_diff) else null end) as $ranges
+| ($ARGS.named.mode // "in_diff") as $mode
 | (if . == null then [] else . end)
 | map(
     . as $finding
@@ -51,13 +52,18 @@ def parse_diff($diff_text):
     | ($finding.EndLine // $finding.end_line // $f_start) as $f_end
     | select(
         if $ranges == null then
-          true
+          ($mode != "preexisting")
         else
-          $ranges | any(
+          ($ranges | any(
             .file == $fp and
             $f_start <= .end and
             $f_end >= .start
-          )
+          )) as $in_diff
+          | if $mode == "preexisting" then
+              ($in_diff | not)
+            else
+              $in_diff
+            end
         end
       )
   )
