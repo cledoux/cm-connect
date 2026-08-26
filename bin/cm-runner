@@ -9,8 +9,10 @@ WORKSPACE_DIR="$(pwd)"
 
 DOCKER_ARGS=(
     "--rm"
+    "--user" "$(id -u):$(id -g)"
     "-v" "${WORKSPACE_DIR}:/workspace"
 )
+
 
 # Allocate pseudo-TTY only if stdout and stdin are attached to a terminal
 if [ -t 0 ] && [ -t 1 ]; then

@@ -76,6 +76,7 @@ jobs:
           # Execute scanner with exit code trapping
           set +e
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "$(pwd):/workspace" \
             -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
@@ -84,6 +85,7 @@ jobs:
             ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
           SCAN_EXIT_CODE=$?
           set -e
+
 
           if [ "$SCAN_EXIT_CODE" -eq 0 ]; then
             echo "Clean scan: 0 vulnerabilities found."
