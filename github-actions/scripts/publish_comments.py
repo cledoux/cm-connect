@@ -68,6 +68,85 @@ def format_fallback_issue_comment_body(
     )
 
 
+def format_advisory_issue_comment_body(findings: List[Dict[str, Any]]) -> str:
+    """Formats an advisory top-level issue comment for potentially preexisting findings outside PR diff.
+    // Governing: ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0004, REQ-0007
+    """
+    count = len(findings)
+    header = (
+        "### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding(s) (Non-Blocking)\n"
+        "> **Note:** The following finding(s) were detected in untouched sections of the codebase "
+        "outside the current pull request diff. They are advisory and do not block this PR.\n\n"
+    )
+    items = []
+    for idx, item in enumerate(findings, 1):
+        payload = item.get("payload") or item
+        title = item.get("title") or payload.get("Title") or "Untitled Security Finding"
+        vuln_type = payload.get("VulnType") or payload.get("vuln_type") or "Vulnerability"
+        severity = item.get("severity") or payload.get("Severity") or "UNKNOWN"
+        fp = item.get("file_path") or payload.get("FilePath") or payload.get("file_path") or "unknown"
+        line = item.get("start_line") or payload.get("StartLine") or payload.get("line") or 1
+        analysis = payload.get("Analysis") or payload.get("analysis") or payload.get("message") or "No details available."
+
+        items.append(
+            f"#### {idx}. {title}\n"
+            f"- **File:** `{fp}:{line}`\n"
+            f"- **Severity:** `{severity}` | **Vulnerability:** `{vuln_type}`\n"
+            f"- **Details:** {analysis}\n"
+        )
+    return header + "\n".join(items)
+
+
+def publish_advisory_findings(
+    findings: List[Dict[str, Any]],
+    api_url: Optional[str] = None,
+    repo: Optional[str] = None,
+    pr_number: Optional[int] = None,
+    token: Optional[str] = None,
+    summary_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publishes non-blocking advisory comments and step summaries for out-of-diff findings.
+    // Governing: ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0004, REQ-0007
+    """
+    if not findings:
+        return {"status": "NO_PREEXISTING_FINDINGS", "issue_comments_posted": 0}
+
+    base_api_url = (api_url or os.environ.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
+    repository = repo or os.environ.get("GITHUB_REPOSITORY") or ""
+    auth_token = token or os.environ.get("GITHUB_TOKEN") or ""
+
+    pr_num = pr_number
+    if pr_num is None:
+        pr_env = os.environ.get("PR_NUMBER")
+        if pr_env and pr_env.isdigit():
+            pr_num = int(pr_env)
+        else:
+            pr_num = 0
+
+    issue_endpoint = f"{base_api_url}/repos/{repository}/issues/{pr_num}/comments"
+    issue_comments_posted = 0
+
+    body = format_advisory_issue_comment_body(findings)
+    if auth_token and repository and pr_num:
+        try:
+            _send_github_api_request(issue_endpoint, auth_token, {"body": body})
+            issue_comments_posted += 1
+            print(f"[INFO] Posted advisory comment for {len(findings)} potentially preexisting finding(s).", file=sys.stderr)
+        except Exception as err:
+            print(f"[WARN] Failed to post advisory issue comment: {err}", file=sys.stderr)
+
+    target_path = summary_path or os.environ.get("GITHUB_STEP_SUMMARY")
+    if target_path:
+        with open(target_path, "a", encoding="utf-8") as f:
+            f.write(body + "\n")
+
+    return {
+        "status": "ADVISORY_POSTED",
+        "findings_count": len(findings),
+        "issue_comments_posted": issue_comments_posted,
+    }
+
+
 def format_summary_card(envelope: Dict[str, Any], summary_path: Optional[str] = None) -> None:
     """Writes or appends a remediation summary card to $GITHUB_STEP_SUMMARY.
     // Governing: ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0006, REQ-0007
@@ -249,9 +328,26 @@ def publish_comments(
 def main() -> None:
     """CLI entrypoint for standalone execution."""
     if "-h" in sys.argv or "--help" in sys.argv:
-        print("Usage: python3 publish_comments.py <change_envelope.json>", file=sys.stdout)
-        print("Translates ChangeEnvelope JSON into PR review comments or issue comments.")
+        print("Usage: python3 publish_comments.py [--advisory] <change_envelope.json | preexisting_findings.json>", file=sys.stdout)
+        print("Translates ChangeEnvelope JSON into PR review comments or posts advisory preexisting finding comments.")
         sys.exit(0)
+
+    if "--advisory" in sys.argv:
+        args = [a for a in sys.argv[1:] if a != "--advisory"]
+        target_file = args[0] if len(args) > 0 else os.environ.get("FINDINGS_PATH")
+        if not target_file:
+            print("Usage: python3 publish_comments.py --advisory <preexisting_findings.json>", file=sys.stderr)
+            sys.exit(1)
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            findings = data if isinstance(data, list) else [data]
+            result = publish_advisory_findings(findings=findings)
+            print(json.dumps(result, indent=2))
+        except Exception as exc:
+            print(f"[ERROR] publish_advisory_findings failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if len(sys.argv) < 2 and not os.environ.get("ENVELOPE_PATH"):
         print("Usage: python3 publish_comments.py <change_envelope.json>", file=sys.stderr)
@@ -268,3 +364,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

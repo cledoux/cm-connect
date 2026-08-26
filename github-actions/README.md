@@ -106,10 +106,15 @@ flowchart TD
     `.codemender-out/findings.json` and sets `has_findings=true`.
   - **Exit Code > 1 (Error):** Fatal Git, CLI, or runtime error (e.g. shallow
     clone requiring `fetch-depth: 0`); fails the step.
-- **Dynamic Matrix Partitioning:** Parses findings with `jq`, sorts remaining
-  findings by severity (`CRITICAL` > `HIGH` > `MEDIUM` > `LOW`), bounds to the
-  top $M$ items (default: 10), and emits the JSON payload array to
-  `outputs.findings_matrix`.
+- **Dynamic Matrix Partitioning & Scope Classification:** Parses findings with
+  `jq`, cross-references findings against the pull request diff, and partitions
+  findings into two streams:
+  - **In-Diff Findings:** Sorted by severity (`CRITICAL` > `HIGH` > `MEDIUM` >
+    `LOW`), bounded to the top $M$ items (default: 10), and emitted to
+    `outputs.findings_matrix` for parallel remediation (`fix`).
+  - **Out-of-Diff Preexisting Findings:** Captured and posted as non-blocking
+    advisory comments and `$GITHUB_STEP_SUMMARY` entries, leaving the PR status
+    green and without triggering unnecessary fix jobs.
 
 ### 2. Parallel Stateless Patch Remediation (`fix`)
 
