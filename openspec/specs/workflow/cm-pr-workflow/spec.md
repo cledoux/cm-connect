@@ -179,40 +179,57 @@ and trap the exit code:
 
 ______________________________________________________________________
 
-### REQ-0004: Dynamic Matrix Partitioning and Concurrency Throttling
+### REQ-0004: Dynamic Matrix Partitioning and Finding Scope Classification
 
 When `has_findings=true`, the `scan` job MUST parse
-`.codemender-out/findings.json` using `jq` and construct a dynamic matrix JSON
-array:
+`.codemender-out/findings.json` using `jq` against `commit.diff` and classify
+findings into two streams:
 
-1. **Diff Filtering:** The generator MUST filter findings against `commit.diff`
-   and discard findings that do not touch modified files or lines in the diff.
-1. **Finding Prioritization:** If remaining findings exceed a configurable
-   maximum threshold $M$ (default: `10`), findings MUST be sorted by `Severity`
-   (`CRITICAL` > `HIGH` > `MEDIUM` > `LOW`) and truncated to the top $M$ items.
-1. **Output Matrix:** The generator MUST emit the resulting JSON array to
-   `outputs.findings_matrix` where each element contains:
-   - `finding_id`: The canonical finding identifier.
-   - `file_path`: Path to the affected source file.
-   - `start_line`: Vulnerability start line number.
-   - `title`: Summary headline.
-   - `payload`: The complete single-finding JSON object consumable by
+1. **In-Diff Findings (Actionable / Blocking Fix Candidates):**
+   - Findings whose `FilePath` and line range intersect lines added or modified
+     in `commit.diff`.
+   - If in-diff findings exceed a configurable maximum threshold $M$ (default:
+     `10`), findings MUST be sorted by `Severity` (`CRITICAL` > `HIGH` >
+     `MEDIUM` > `LOW`) and truncated to the top $M$ items.
+   - Emitted to `outputs.findings_matrix` for parallel remediation via
      `cm-runner fix`.
+   - If 1 or more in-diff findings exist, `outputs.has_findings` MUST be set to
+     `true`.
+1. **Out-of-Diff / Potentially Preexisting Findings (Advisory / Non-Blocking):**
+   - Findings whose `FilePath` or line range fall outside the modified lines in
+     `commit.diff`.
+   - Out-of-diff findings MUST NOT spawn automated `fix` runner matrix jobs.
+   - Out-of-diff findings MUST be captured in `outputs.preexisting_findings` (or
+     formatted directly to PR issue comments / step summaries) and clearly
+     labeled as **"Potentially Preexisting Finding (Advisory / Non-Blocking)"**.
+   - Out-of-diff findings MUST NOT block CI checks or PR merging.
+1. **Empty In-Diff Stream with Preexisting Findings:**
+   - If all detected findings are out-of-diff, `outputs.has_findings` MUST be
+     set to `false` (bypassing `fix` matrix jobs), while the workflow posts the
+     advisory non-blocking comment on the PR / step summary and exits cleanly
+     with status code `0`.
 
-#### Scenario: Generate dynamic matrix from diff findings
-
-- **GIVEN** a scan output with 2 findings touching lines in `commit.diff`
-- **WHEN** the matrix generation step executes
-- **THEN** `outputs.findings_matrix` MUST contain a 2-element JSON array
-  formatted for GitHub Actions `strategy: matrix`.
-
-#### Scenario: Discard out-of-diff findings during matrix generation
+#### Scenario: Generate dynamic matrix for in-diff findings and separate preexisting findings
 
 - **GIVEN** a scan output with 1 finding in modified `pkg/auth/store.go` and 1
   finding in untouched `legacy/db.go`
 - **WHEN** the matrix generation step executes
 - **THEN** `outputs.findings_matrix` MUST include only the finding for
-  `pkg/auth/store.go`.
+  `pkg/auth/store.go`
+- **AND** `outputs.has_findings` MUST be `true`
+- **AND** the untouched finding in `legacy/db.go` MUST be emitted as a
+  potentially preexisting advisory finding.
+
+#### Scenario: All findings are out-of-diff preexisting vulnerabilities
+
+- **GIVEN** a scan output where all findings fall on lines untouched by
+  `commit.diff`
+- **WHEN** the matrix generation step executes
+- **THEN** `outputs.findings_matrix` MUST be `[]`
+- **AND** `outputs.has_findings` MUST be `false`
+- **AND** the workflow MUST post a non-blocking advisory PR summary noting the
+  potentially preexisting findings
+- **AND** the PR check run MUST conclude successfully with exit code `0`.
 
 ______________________________________________________________________
 
@@ -292,18 +309,29 @@ hunk into an inline review suggestion comment:
 
 ______________________________________________________________________
 
-### REQ-0007: Diff-Boundary Fallback Handling
+### REQ-0007: Diff-Boundary Fallback & Potentially Preexisting Advisory Comments
 
-If the GitHub API rejects an inline review comment with HTTP
-`422 Unprocessable Entity` (indicating the targeted line falls outside the pull
-request's diff hunk):
-
-1. The publisher MUST catch the error without failing the job step.
-1. The publisher MUST fall back to creating a top-level pull request issue
-   comment (`POST /repos/{owner}/{repo}/issues/{id}/comments`) or writing to
-   `$GITHUB_STEP_SUMMARY`.
-1. The fallback comment MUST contain the finding title, summary, and the unified
-   diff patch in a ```` ```diff ```` code block.
+1. **HTTP 422 Diff-Boundary Fallback:**
+   - If the GitHub API rejects an inline review comment with HTTP
+     `422 Unprocessable Entity` (indicating the targeted fix hunk falls outside
+     the pull request's diff hunk):
+     - The publisher MUST catch the error without failing the job step.
+     - The publisher MUST fall back to creating a top-level pull request issue
+       comment (`POST /repos/{owner}/{repo}/issues/{id}/comments`) or writing to
+       `$GITHUB_STEP_SUMMARY`.
+     - The fallback comment MUST contain the finding title, summary, and the
+       unified diff patch in a ```` ```diff ```` code block.
+1. **Potentially Preexisting Finding Advisory Comments:**
+   - For findings identified by the scanner that do not intersect modified lines
+     in `commit.diff`:
+     - The comment publisher or workflow step MUST format and publish a
+       top-level pull request issue comment or step summary.
+     - The comment header MUST clearly state:
+       `### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding (Non-Blocking)`.
+     - The comment MUST include the file path, line number, severity,
+       vulnerability type, analysis summary, and an explicit disclaimer that
+       this finding is outside the active pull request diff and does not block
+       PR approval or merging.
 
 #### Scenario: Fallback to top-level comment on out-of-diff rejection
 
@@ -311,6 +339,14 @@ request's diff hunk):
 - **WHEN** `createReviewComment` throws an error
 - **THEN** the publisher MUST post a top-level PR comment with the diff patch
   and log the fallback.
+
+#### Scenario: Post non-blocking advisory comment for potentially preexisting finding
+
+- **GIVEN** a scan finding on an untouched file line outside `commit.diff`
+- **WHEN** the advisory comment publisher runs
+- **THEN** it MUST post a top-level PR issue comment or `$GITHUB_STEP_SUMMARY`
+  card marked as non-blocking and advisory
+- **AND** the check status MUST remain successful (green).
 
 ______________________________________________________________________
 

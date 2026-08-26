@@ -105,12 +105,17 @@ flowchart TD
         DockerFindDiff["docker run cm-runner find-diff base.sha head.sha<br>(stdout -> findings.json)"]
         ExitTrap{"Trap Exit Code"}
         CleanExit["Exit 0: Clean / Empty Diff<br>outputs.has_findings = false"]
-        FindingsExit["Exit 1: Findings Detected<br>outputs.has_findings = true"]
-        MatrixGen["jq Dynamic Matrix Generator<br>outputs.findings_matrix = [...]"]
+        FindingsExit["Exit 1: Findings Detected"]
+        MatrixGen["jq Dynamic Classifier & Matrix Generator"]
+        InDiffStream["In-Diff Findings<br>outputs.has_findings = true<br>outputs.findings_matrix = [...]"]
+        PreexistingStream["Out-of-Diff Preexisting Findings<br>(Non-Blocking Advisory)"]
+        PostAdvisory["Post Non-Blocking Advisory Comment / Summary<br>(PR Status: GREEN)"]
 
         Checkout --> WIFScan --> DockerFindDiff --> ExitTrap
         ExitTrap -->|"Code 0 (Clean)"| CleanExit
         ExitTrap -->|"Code 1 (Findings)"| FindingsExit --> MatrixGen
+        MatrixGen -->|"In-Diff Items"| InDiffStream
+        MatrixGen -->|"Out-of-Diff Items"| PreexistingStream --> PostAdvisory
     end
 
     subgraph FixMatrixJob["3. Parallel Fix Matrix Jobs (strategy: matrix)"]
@@ -141,7 +146,7 @@ flowchart TD
     end
 
     PR --> ScanJob
-    MatrixGen -->|outputs.findings_matrix| FixMatrixJob
+    InDiffStream -->|outputs.findings_matrix| FixMatrixJob
 ```
 
 ______________________________________________________________________
@@ -295,10 +300,26 @@ issue comment via `POST /repos/{owner}/{repo}/issues/{number}/comments`:
   ```
   ````
 
-### 3. Step Summary Generation:
+### 3. Potentially Preexisting Finding Advisory Comment Path:
 
-For all processed findings (both `FIXED` and `UNRESOLVED`), the script formats a
-markdown status card and appends it to `$GITHUB_STEP_SUMMARY`.
+For scan findings that fall on lines untouched by `commit.diff`:
+
+- `issue_number`: PR Number
+- `body`:
+  ```markdown
+  ### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding (Non-Blocking)
+  > **Note:** This finding is in code not modified by this pull request and is non-blocking.
+
+  **File:** `legacy/helper.go:120` | **Severity:** HIGH | **Vulnerability:** CWE-798
+
+  Hardcoded credential detected in untouched helper code.
+  ```
+
+### 4. Step Summary Generation:
+
+For all processed findings (both `FIXED`, `UNRESOLVED`, and potentially
+preexisting advisories), the script or workflow formats a markdown status card
+and appends it to `$GITHUB_STEP_SUMMARY`.
 
 ______________________________________________________________________
 
