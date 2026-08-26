@@ -732,3 +732,61 @@ func TestRun_FindDiff_WriteError(t *testing.T) {
 		t.Errorf("expected write error on stderr, got: %s", stderr.String())
 	}
 }
+
+func TestEnsureProjectEnv(t *testing.T) {
+	origGCPProj := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	origCoreProj := os.Getenv("CLOUDSDK_CORE_PROJECT")
+	origCreds := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	defer func() {
+		os.Setenv("GOOGLE_CLOUD_PROJECT", origGCPProj)
+		os.Setenv("CLOUDSDK_CORE_PROJECT", origCoreProj)
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", origCreds)
+	}()
+
+	t.Run("already_set", func(t *testing.T) {
+		os.Setenv("GOOGLE_CLOUD_PROJECT", "existing-proj")
+		os.Setenv("CLOUDSDK_CORE_PROJECT", "existing-core-proj")
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/creds.json")
+		ensureProjectEnv()
+		if os.Getenv("GOOGLE_CLOUD_PROJECT") != "existing-proj" {
+			t.Errorf("expected existing-proj, got %s", os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		}
+	})
+
+	t.Run("extract_project_id", func(t *testing.T) {
+		os.Unsetenv("GOOGLE_CLOUD_PROJECT")
+		os.Unsetenv("CLOUDSDK_CORE_PROJECT")
+		tmpFile := filepath.Join(t.TempDir(), "creds.json")
+		_ = os.WriteFile(tmpFile, []byte(`{"project_id": "extracted-proj-123"}`), 0600)
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+		ensureProjectEnv()
+		if os.Getenv("GOOGLE_CLOUD_PROJECT") != "extracted-proj-123" {
+			t.Errorf("expected extracted-proj-123, got %s", os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		}
+		if os.Getenv("CLOUDSDK_CORE_PROJECT") != "extracted-proj-123" {
+			t.Errorf("expected extracted-proj-123, got %s", os.Getenv("CLOUDSDK_CORE_PROJECT"))
+		}
+	})
+
+	t.Run("extract_quota_project_id", func(t *testing.T) {
+		os.Unsetenv("GOOGLE_CLOUD_PROJECT")
+		os.Unsetenv("CLOUDSDK_CORE_PROJECT")
+		tmpFile := filepath.Join(t.TempDir(), "creds.json")
+		_ = os.WriteFile(tmpFile, []byte(`{"quota_project_id": "quota-proj-456"}`), 0600)
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile)
+		ensureProjectEnv()
+		if os.Getenv("GOOGLE_CLOUD_PROJECT") != "quota-proj-456" {
+			t.Errorf("expected quota-proj-456, got %s", os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		}
+	})
+
+	t.Run("empty_or_invalid_file", func(t *testing.T) {
+		os.Unsetenv("GOOGLE_CLOUD_PROJECT")
+		os.Unsetenv("CLOUDSDK_CORE_PROJECT")
+		os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/invalid.json")
+		ensureProjectEnv()
+		if os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+			t.Errorf("expected empty string, got %s", os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		}
+	})
+}

@@ -80,11 +80,14 @@ jobs:
             -v "$(pwd):/workspace" \
             -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
+            -e GOOGLE_CLOUD_PROJECT="${CLOUDSDK_CORE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}" \
+            -e CLOUDSDK_CORE_PROJECT="${CLOUDSDK_CORE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}" \
             -e NO_COLOR=1 \
             -e TERM=dumb \
             ghcr.io/cledoux/cm-runner:latest find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > .codemender-out/findings.json
           SCAN_EXIT_CODE=$?
           set -e
+
 
 
           if [ "$SCAN_EXIT_CODE" -eq 0 ]; then
@@ -163,9 +166,12 @@ jobs:
             -v "$(pwd):/workspace-ro:ro" \
             -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
+            -e GOOGLE_CLOUD_PROJECT="${CLOUDSDK_CORE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}" \
+            -e CLOUDSDK_CORE_PROJECT="${CLOUDSDK_CORE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}" \
             -e NO_COLOR=1 \
             -e TERM=dumb \
             ghcr.io/cledoux/cm-runner:latest fix - > change_envelope.json
+
           FIX_EXIT_CODE=$?
           set -e
 

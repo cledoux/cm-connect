@@ -38,4 +38,14 @@ if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "${GOOGLE_APPLICATION_CR
     DOCKER_ARGS+=("-e" "GOOGLE_APPLICATION_CREDENTIALS=/home/codemender/.config/gcloud/${CRED_FILE_NAME}")
 fi
 
+# Forward GCP Project ID if present
+if [ -n "${GOOGLE_CLOUD_PROJECT:-}" ]; then
+    DOCKER_ARGS+=("-e" "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}")
+fi
+if [ -n "${CLOUDSDK_CORE_PROJECT:-}" ]; then
+    DOCKER_ARGS+=("-e" "CLOUDSDK_CORE_PROJECT=${CLOUDSDK_CORE_PROJECT}")
+fi
+
 exec docker run "${DOCKER_ARGS[@]}" "${IMAGE_NAME}" "$@"
+
+
