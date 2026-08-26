@@ -159,10 +159,6 @@ jobs:
         run: |
           git fetch origin "${{ github.event.pull_request.base.sha }}" || git fetch origin "${{ github.base_ref }}"
 
-      - name: "Extract Pull Request diff"
-        run: |
-          git diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > commit.diff
-
       - name: "Log in to GitHub Container Registry"
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -179,15 +175,12 @@ jobs:
           FINDING_PAYLOAD: ${{ toJson(matrix.finding.payload) }}
         run: |
           mkdir -p .codemender-out
-          echo "$FINDING_PAYLOAD" > .codemender-out/finding.json
+          printf '%s\n' "$FINDING_PAYLOAD" > .codemender-out/finding.json
 
           set +e
           cat .codemender-out/finding.json | docker run --rm -i \
-
-            --device /dev/fuse \
-            --cap-add SYS_ADMIN \
-            --security-opt apparmor=unconfined \
-            -v "$(pwd):/workspace-ro:ro" \
+            --user "$(id -u):$(id -g)" \
+            -v "$(pwd):/workspace" \
             -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcp_creds.json:ro" \
             -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp_creds.json \
             -e GOOGLE_CLOUD_PROJECT="${CLOUDSDK_CORE_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}" \
@@ -215,7 +208,6 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
         run: |
           PUBLISH_SCRIPT="github-actions/scripts/publish_comments.py"
           if [ -f ".github/scripts/publish_comments.py" ]; then

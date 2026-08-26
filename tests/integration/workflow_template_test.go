@@ -303,11 +303,11 @@ func TestWorkflow_FixJobDefinition(t *testing.T) {
 		}
 		if strings.Contains(step.Run, "cm-runner") && strings.Contains(step.Run, "fix") {
 			hasFixRun = true
-			if !strings.Contains(step.Run, "--device /dev/fuse") {
-				t.Errorf("fix docker run missing --device /dev/fuse: %s", step.Run)
+			if !strings.Contains(step.Run, "-v \"$(pwd):/workspace\"") && !strings.Contains(step.Run, "-v \"$PWD:/workspace\"") {
+				t.Errorf("fix docker run missing workspace volume mount: %s", step.Run)
 			}
-			if !strings.Contains(step.Run, "/workspace-ro:ro") {
-				t.Errorf("fix docker run missing /workspace-ro:ro read-only mount: %s", step.Run)
+			if !strings.Contains(step.Run, "--user \"$(id -u):$(id -g)\"") {
+				t.Errorf("fix docker run missing --user user mapping: %s", step.Run)
 			}
 			if !strings.Contains(step.Run, "change_envelope.json") {
 				t.Errorf("fix docker run missing change_envelope.json output redirect: %s", step.Run)
