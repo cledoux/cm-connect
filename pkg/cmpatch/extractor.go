@@ -178,6 +178,19 @@ func SynthesizeEnvelope(findingID, vulnType, title, summary, rawDiff string) (*C
 		return nil, fmt.Errorf("failed to parse diff: %w", err)
 	}
 
+	if len(files) == 0 && len(hunks) == 0 {
+		return &ChangeEnvelope{
+			FindingID:     findingID,
+			Status:        "UNRESOLVED",
+			VulnType:      vulnType,
+			Title:         title,
+			Summary:       summary,
+			FilesModified: []string{},
+			Patch:         "",
+			Hunks:         []Hunk{},
+		}, nil
+	}
+
 	return &ChangeEnvelope{
 		FindingID:     findingID,
 		Status:        "FIXED",
@@ -206,12 +219,30 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 		pathspecExclusions := []string{
 			"--",
 			".",
+			":!.cm_project",
+			":!*.cm_project",
+			":!**/.cm_project",
+			":!**/*.cm_project",
+			":!.cm_*",
+			":!**/.cm_*",
 			":!.codemender",
+			":!**/.codemender",
+			":!**/.codemender/**",
 			":!.codemender-out",
+			":!**/.codemender-out",
+			":!**/.codemender-out/**",
+			":!.gitignore",
+			":!*.gitignore",
+			":!**/.gitignore",
+			":!**/*.gitignore",
 			":!change_envelope.json",
+			":!**/change_envelope.json",
 			":!*creds*.json",
+			":!**/*creds*.json",
 			":!*.diff",
+			":!**/*.diff",
 			":!*.tmp",
+			":!**/*.tmp",
 		}
 
 		// Stage untracked files intent so new files appear in git diff
@@ -244,8 +275,13 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 			"-u",
 			"-r",
 			"-x", ".git",
+			"-x", ".cm_project",
+			"-x", "*.cm_project",
+			"-x", ".cm_*",
 			"-x", ".codemender",
 			"-x", ".codemender-out",
+			"-x", ".gitignore",
+			"-x", "*.gitignore",
 			"-x", "change_envelope.json",
 			"-x", "*creds*.json",
 			"-x", "*.diff",

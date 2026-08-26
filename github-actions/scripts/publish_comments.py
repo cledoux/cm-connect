@@ -2,9 +2,11 @@
 """
 publish_comments.py
 
-Translates CodeMender ChangeEnvelope records into GitHub PR inline review suggestions
-with 1-click apply diff blocks, catches HTTP 422 errors on out-of-diff lines with issue
-comment fallback, and appends finding summary cards to $GITHUB_STEP_SUMMARY.
+Translates CodeMender ChangeEnvelope and Finding records into GitHub PR inline review suggestions
+and executive scan summary reports. Supports two-tier commenting architecture:
+- Summary Mode (--mode=summary): Ingests findings.json and posts a comprehensive executive summary issue comment with findings table and collapsible threat analysis.
+- Inline Mode (--mode=inline, default): Ingests change_envelope.json and publishes lightweight 1-click apply review suggestions.
+- Advisory Mode (--advisory): Ingests out-of-diff findings and posts non-blocking advisory notes.
 
 Governing: ADR-0004, ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0006, REQ-0007, REQ-TEST.2
 """
@@ -17,19 +19,210 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def normalize_finding(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Polymorphically extracts finding attributes supporting PascalCase and snake_case."""
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+
+    finding_id = (
+        item.get("finding_id")
+        or item.get("FindingID")
+        or item.get("id")
+        or payload.get("FindingID")
+        or payload.get("finding_id")
+        or ""
+    )
+    title = (
+        item.get("title")
+        or item.get("Title")
+        or payload.get("Title")
+        or payload.get("title")
+        or "Security Finding"
+    )
+    vuln_type = (
+        item.get("vuln_type")
+        or item.get("VulnType")
+        or payload.get("VulnType")
+        or payload.get("vuln_type")
+        or "Vulnerability"
+    )
+    severity = (
+        item.get("severity")
+        or item.get("Severity")
+        or payload.get("Severity")
+        or payload.get("severity")
+        or "UNKNOWN"
+    ).upper()
+    status = (
+        item.get("status")
+        or item.get("Status")
+        or payload.get("Status")
+        or payload.get("status")
+        or "DETECTED"
+    ).upper()
+    file_path = (
+        item.get("file_path")
+        or item.get("FilePath")
+        or payload.get("FilePath")
+        or payload.get("file_path")
+        or "unknown"
+    )
+    start_line_raw = (
+        item.get("start_line")
+        or item.get("StartLine")
+        or payload.get("StartLine")
+        or payload.get("start_line")
+        or item.get("line")
+        or 1
+    )
+    try:
+        start_line = int(start_line_raw)
+    except (ValueError, TypeError):
+        start_line = 1
+
+    analysis = (
+        item.get("analysis")
+        or item.get("Analysis")
+        or payload.get("Analysis")
+        or payload.get("analysis")
+        or item.get("message")
+        or payload.get("message")
+        or "No detailed analysis available."
+    )
+
+    return {
+        "finding_id": finding_id,
+        "title": title,
+        "vuln_type": vuln_type,
+        "severity": severity,
+        "status": status,
+        "file_path": file_path,
+        "start_line": start_line,
+        "analysis": analysis,
+    }
+
+
+def format_executive_summary(findings: List[Dict[str, Any]]) -> str:
+    """Formats an executive Markdown summary with metrics, findings table, and collapsible threat analysis."""
+    normalized = [normalize_finding(f) for f in findings]
+    total = len(normalized)
+
+    sev_counts: Dict[str, int] = {}
+    for f in normalized:
+        sev = f["severity"]
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+    sev_summary_parts = []
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]:
+        if sev in sev_counts:
+            sev_summary_parts.append(f"**{sev}:** {sev_counts[sev]}")
+    sev_summary_str = " | ".join(sev_summary_parts) if sev_summary_parts else "None"
+
+    header = (
+        "### 🛡️ CodeMender Security Scan Summary\n\n"
+        f"**Total Findings:** {total} ({sev_summary_str})\n\n"
+    )
+
+    table_header = (
+        "| Severity | Status | Finding | Location | Action |\n"
+        "|---|---|---|---|---|\n"
+    )
+    table_rows = []
+    for f in normalized:
+        sev = f["severity"]
+        status = f["status"]
+        title = f["title"]
+        vuln = f["vuln_type"]
+        loc = f"`{f['file_path']}:{f['start_line']}`"
+        action = "Automated Fix Pending" if status in ["DETECTED", "PENDING", "OPEN"] else ("Remediated" if status == "FIXED" else "Review Required")
+        table_rows.append(f"| `{sev}` | `{status}` | **{title}** (`{vuln}`) | {loc} | {action} |")
+
+    table_str = table_header + "\n".join(table_rows) + "\n\n"
+
+    details_header = "<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>\n\n"
+    details_body = []
+    for idx, f in enumerate(normalized, 1):
+        details_body.append(
+            f"#### {idx}. {f['title']} (`{f['vuln_type']}`)\n"
+            f"- **Location:** `{f['file_path']}:{f['start_line']}`\n"
+            f"- **Severity:** `{f['severity']}` | **Status:** `{f['status']}`\n"
+            f"- **Threat Analysis & Impact:**\n\n"
+            f"{f['analysis']}\n"
+        )
+    details_str = details_header + "\n".join(details_body) + "\n</details>\n"
+
+    return header + table_str + details_str
+
+
+def publish_summary(
+    findings: Optional[Any] = None,
+    findings_path: Optional[str] = None,
+    api_url: Optional[str] = None,
+    repo: Optional[str] = None,
+    pr_number: Optional[int] = None,
+    token: Optional[str] = None,
+    summary_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publishes executive summary comment and step summary in summary mode."""
+    data = findings
+    if data is None:
+        target_file = findings_path or os.environ.get("FINDINGS_PATH")
+        if not target_file:
+            raise ValueError("publish_summary: No findings data or file path provided.")
+        if not os.path.exists(target_file):
+            raise FileNotFoundError(f"publish_summary: Findings file not found at {target_file}")
+        with open(target_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+    findings_list = data if isinstance(data, list) else [data]
+    if not findings_list:
+        return {"status": "NO_FINDINGS", "issue_comments_posted": 0}
+
+    base_api_url = (api_url or os.environ.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
+    repository = repo or os.environ.get("GITHUB_REPOSITORY") or ""
+    auth_token = token or os.environ.get("GITHUB_TOKEN") or ""
+
+    pr_num = pr_number
+    if pr_num is None:
+        pr_env = os.environ.get("PR_NUMBER")
+        if pr_env and pr_env.isdigit():
+            pr_num = int(pr_env)
+        else:
+            pr_num = 0
+
+    issue_endpoint = f"{base_api_url}/repos/{repository}/issues/{pr_num}/comments"
+    issue_comments_posted = 0
+
+    summary_markdown = format_executive_summary(findings_list)
+    if auth_token and repository and pr_num:
+        try:
+            _send_github_api_request(issue_endpoint, auth_token, {"body": summary_markdown})
+            issue_comments_posted += 1
+            print(f"[INFO] Posted executive scan summary comment for {len(findings_list)} finding(s).", file=sys.stderr)
+        except Exception as err:
+            print(f"[WARN] Failed to post scan summary issue comment: {err}", file=sys.stderr)
+
+    target_path = summary_path or os.environ.get("GITHUB_STEP_SUMMARY")
+    if target_path:
+        with open(target_path, "a", encoding="utf-8") as f:
+            f.write(summary_markdown + "\n")
+
+    return {
+        "status": "SUMMARY_POSTED",
+        "findings_count": len(findings_list),
+        "issue_comments_posted": issue_comments_posted,
+    }
+
+
 def format_review_comment_body(envelope: Dict[str, Any], hunk: Dict[str, Any]) -> str:
-    """Formats an inline pull request review comment with ```suggestion markdown block.
+    """Formats a lightweight inline pull request review comment with ```suggestion markdown block.
     // Governing: ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0006
     """
     title = envelope.get("title") or "Security Finding"
-    vuln_type = envelope.get("vuln_type") or "Vulnerability"
-    severity = envelope.get("severity") or "HIGH"
     summary = envelope.get("summary") or "CodeMender automated remediation."
     replacement = (hunk.get("replacement") or "").rstrip("\n")
 
     return (
-        f"### 🛡️ CodeMender Auto-Fix: {title}\n"
-        f"> **Vulnerability:** {vuln_type} | **Severity:** {severity}\n\n"
+        f"### 🛡️ CodeMender Fix: {title}\n\n"
         f"{summary}\n\n"
         f"```suggestion\n"
         f"{replacement}\n"
@@ -72,7 +265,6 @@ def format_advisory_issue_comment_body(findings: List[Dict[str, Any]]) -> str:
     """Formats an advisory top-level issue comment for potentially preexisting findings outside PR diff.
     // Governing: ADR-0005, SPEC-workflow/cm-pr-workflow, REQ-0004, REQ-0007
     """
-    count = len(findings)
     header = (
         "### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding(s) (Non-Blocking)\n"
         "> **Note:** The following finding(s) were detected in untouched sections of the codebase "
@@ -80,19 +272,12 @@ def format_advisory_issue_comment_body(findings: List[Dict[str, Any]]) -> str:
     )
     items = []
     for idx, item in enumerate(findings, 1):
-        payload = item.get("payload") or item
-        title = item.get("title") or payload.get("Title") or "Untitled Security Finding"
-        vuln_type = payload.get("VulnType") or payload.get("vuln_type") or "Vulnerability"
-        severity = item.get("severity") or payload.get("Severity") or "UNKNOWN"
-        fp = item.get("file_path") or payload.get("FilePath") or payload.get("file_path") or "unknown"
-        line = item.get("start_line") or payload.get("StartLine") or payload.get("line") or 1
-        analysis = payload.get("Analysis") or payload.get("analysis") or payload.get("message") or "No details available."
-
+        f = normalize_finding(item)
         items.append(
-            f"#### {idx}. {title}\n"
-            f"- **File:** `{fp}:{line}`\n"
-            f"- **Severity:** `{severity}` | **Vulnerability:** `{vuln_type}`\n"
-            f"- **Details:** {analysis}\n"
+            f"#### {idx}. {f['title']}\n"
+            f"- **File:** `{f['file_path']}:{f['start_line']}`\n"
+            f"- **Severity:** `{f['severity']}` | **Vulnerability:** `{f['vuln_type']}`\n"
+            f"- **Details:** {f['analysis']}\n"
         )
     return header + "\n".join(items)
 
@@ -329,36 +514,52 @@ def publish_comments(
 
 
 def main() -> None:
-    """CLI entrypoint for standalone execution."""
+    """CLI entrypoint supporting --mode=summary, --mode=inline, and --advisory."""
     if "-h" in sys.argv or "--help" in sys.argv:
-        print("Usage: python3 publish_comments.py [--advisory] <change_envelope.json | preexisting_findings.json>", file=sys.stdout)
-        print("Translates ChangeEnvelope JSON into PR review comments or posts advisory preexisting finding comments.")
+        print(
+            "Usage: python3 publish_comments.py [--mode=summary|--mode=inline|--advisory] <file.json>",
+            file=sys.stdout,
+        )
+        print("Translates ChangeEnvelope JSON into PR review comments or publishes finding summaries.")
         sys.exit(0)
 
-    if "--advisory" in sys.argv:
-        args = [a for a in sys.argv[1:] if a != "--advisory"]
-        target_file = args[0] if len(args) > 0 else os.environ.get("FINDINGS_PATH")
-        if not target_file:
-            print("Usage: python3 publish_comments.py --advisory <preexisting_findings.json>", file=sys.stderr)
-            sys.exit(1)
-        try:
+    mode = "inline"
+    args = sys.argv[1:]
+    clean_args = []
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--mode="):
+            mode = arg.split("=", 1)[1].lower()
+        elif arg == "--mode" and i + 1 < len(args):
+            mode = args[i + 1].lower()
+            i += 1
+        elif arg == "--advisory":
+            mode = "advisory"
+        else:
+            clean_args.append(arg)
+        i += 1
+
+    target_file = clean_args[0] if clean_args else (
+        os.environ.get("FINDINGS_PATH") if mode in ["summary", "advisory"] else os.environ.get("ENVELOPE_PATH")
+    )
+
+    if not target_file and not (mode == "inline" and os.environ.get("ENVELOPE_PATH")):
+        print(f"Usage: python3 publish_comments.py [--mode={mode}] <file.json>", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if mode == "summary":
+            result = publish_summary(findings_path=target_file)
+        elif mode == "advisory":
             with open(target_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             findings = data if isinstance(data, list) else [data]
             result = publish_advisory_findings(findings=findings)
-            print(json.dumps(result, indent=2))
-        except Exception as exc:
-            print(f"[ERROR] publish_advisory_findings failed: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
+        else:  # inline (default)
+            result = publish_comments(envelope_path=target_file)
 
-    if len(sys.argv) < 2 and not os.environ.get("ENVELOPE_PATH"):
-        print("Usage: python3 publish_comments.py <change_envelope.json>", file=sys.stderr)
-        sys.exit(1)
-
-    envelope_file = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ENVELOPE_PATH")
-    try:
-        result = publish_comments(envelope_path=envelope_file)
         print(json.dumps(result, indent=2))
     except Exception as exc:
         print(f"[ERROR] publish_comments failed: {exc}", file=sys.stderr)
@@ -367,4 +568,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

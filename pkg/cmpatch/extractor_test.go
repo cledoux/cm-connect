@@ -637,3 +637,179 @@ func TestExtractPatch_ExcludesMetadataAndCredentials_Fallback(t *testing.T) {
 		t.Errorf("fallback patch contains secret data:\n%s", patch)
 	}
 }
+
+func TestSynthesizeEnvelope_PhantomDiffOnlyIn(t *testing.T) {
+	t.Parallel()
+
+	phantomDiff := "Only in /workspace/foo: phantom.txt\nOnly in /workspace/bar: temp.bin\n"
+	env, err := SynthesizeEnvelope("finding-phantom", "CWE-200", "Phantom Info", "Phantom summary", phantomDiff)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "UNRESOLVED" {
+		t.Errorf("expected status 'UNRESOLVED' for phantom diff with 0 files/hunks, got %s", env.Status)
+	}
+	if len(env.FilesModified) != 0 {
+		t.Errorf("expected 0 files modified, got %v", env.FilesModified)
+	}
+	if len(env.Hunks) != 0 {
+		t.Errorf("expected 0 hunks, got %v", env.Hunks)
+	}
+}
+
+func TestExtractPatch_NestedExclusions_Git(t *testing.T) {
+	t.Parallel()
+
+	ws := t.TempDir()
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = ws
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v (%s)", err, string(out))
+	}
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	subDir := filepath.Join(ws, "pkg", "service")
+	_ = os.MkdirAll(subDir, 0755)
+	appFile := filepath.Join(subDir, "service.go")
+	if err := os.WriteFile(appFile, []byte("package service\nfunc Run() {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write service.go: %v", err)
+	}
+
+	cmdAdd := exec.Command("git", "add", ".")
+	cmdAdd.Dir = ws
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = ws
+	_ = cmdCommit.Run()
+
+	// Modify legitimate file
+	if err := os.WriteFile(appFile, []byte("package service\nfunc Run() { /* updated */ }\n"), 0644); err != nil {
+		t.Fatalf("failed to update service.go: %v", err)
+	}
+
+	// Add untracked legitimate nested file
+	if err := os.WriteFile(filepath.Join(subDir, "helper.go"), []byte("package service\nfunc Helper() {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write helper.go: %v", err)
+	}
+
+	// Create nested excluded metadata and ignore files
+	_ = os.WriteFile(filepath.Join(ws, ".cm_project"), []byte("proj"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, ".cm_project"), []byte("nested proj"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "my.cm_project"), []byte("custom proj"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, ".cm_extra"), []byte("extra"), 0644)
+	_ = os.WriteFile(filepath.Join(ws, ".gitignore"), []byte("*.log"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte("*.log"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "custom.gitignore"), []byte("*.log"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "change_envelope.json"), []byte(`{"status":"FIXED"}`), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "sub_creds_test.json"), []byte(`{"secret":"sub"}`), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "nested.diff"), []byte("diff data"), 0644)
+	_ = os.WriteFile(filepath.Join(subDir, "nested.tmp"), []byte("tmp data"), 0644)
+	_ = os.MkdirAll(filepath.Join(subDir, ".codemender", "internal"), 0755)
+	_ = os.WriteFile(filepath.Join(subDir, ".codemender", "internal", "cache.json"), []byte(`{"cache":1}`), 0644)
+	_ = os.MkdirAll(filepath.Join(subDir, ".codemender-out", "nested"), 0755)
+	_ = os.WriteFile(filepath.Join(subDir, ".codemender-out", "nested", "out.json"), []byte(`{"out":1}`), 0644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	patch, err := ExtractPatch(ctx, ws, "")
+	if err != nil {
+		t.Fatalf("ExtractPatch failed: %v", err)
+	}
+
+	if !strings.Contains(patch, "service.go") {
+		t.Errorf("expected patch to contain service.go, got:\n%s", patch)
+	}
+	if !strings.Contains(patch, "helper.go") {
+		t.Errorf("expected patch to contain helper.go, got:\n%s", patch)
+	}
+
+	forbidden := []string{
+		".cm_project",
+		"my.cm_project",
+		".cm_extra",
+		".gitignore",
+		"custom.gitignore",
+		"change_envelope.json",
+		"sub_creds_test.json",
+		"nested.diff",
+		"nested.tmp",
+		"cache.json",
+		"out.json",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(patch, f) {
+			t.Errorf("git patch contains forbidden file %q:\n%s", f, patch)
+		}
+	}
+}
+
+func TestExtractPatch_NestedExclusions_Fallback(t *testing.T) {
+	t.Parallel()
+
+	roDir := t.TempDir()
+	rwDir := t.TempDir()
+
+	subRO := filepath.Join(roDir, "nested", "pkg")
+	subRW := filepath.Join(rwDir, "nested", "pkg")
+	_ = os.MkdirAll(subRO, 0755)
+	_ = os.MkdirAll(subRW, 0755)
+
+	_ = os.WriteFile(filepath.Join(subRO, "main.go"), []byte("package main\nfunc Old() {}\n"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "main.go"), []byte("package main\nfunc New() {}\n"), 0644)
+
+	// Add nested excluded files in rwDir
+	_ = os.WriteFile(filepath.Join(subRW, ".cm_project"), []byte("proj"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "foo.cm_project"), []byte("proj"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, ".cm_state"), []byte("state"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, ".gitignore"), []byte("*.log"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "custom.gitignore"), []byte("*.log"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "change_envelope.json"), []byte(`{"status":"FIXED"}`), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "nested_creds.json"), []byte(`{"secret":1}`), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "test.diff"), []byte("diff"), 0644)
+	_ = os.WriteFile(filepath.Join(subRW, "test.tmp"), []byte("tmp"), 0644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	patch, err := ExtractPatch(ctx, rwDir, roDir)
+	if err != nil {
+		t.Fatalf("ExtractPatch failed: %v", err)
+	}
+
+	if !strings.Contains(patch, "main.go") {
+		t.Errorf("expected patch to contain main.go, got:\n%s", patch)
+	}
+
+	filesModified, hunks, err := ParseDiff(patch)
+	if err != nil {
+		t.Fatalf("ParseDiff failed: %v", err)
+	}
+	if len(filesModified) != 1 || !strings.HasSuffix(filesModified[0], filepath.Join("nested", "pkg", "main.go")) {
+		t.Errorf("expected only nested/pkg/main.go modified, got %v", filesModified)
+	}
+	if len(hunks) != 1 {
+		t.Errorf("expected 1 hunk, got %d", len(hunks))
+	}
+
+	forbidden := []string{
+		".cm_project",
+		"foo.cm_project",
+		".cm_state",
+		".gitignore",
+		"custom.gitignore",
+		"change_envelope.json",
+		"nested_creds.json",
+		"test.diff",
+		"test.tmp",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(patch, "--- "+filepath.Join(roDir, "nested", "pkg", f)) ||
+			strings.Contains(patch, "+++ "+filepath.Join(rwDir, "nested", "pkg", f)) ||
+			strings.Contains(patch, "Only in") {
+			t.Errorf("fallback patch contains diff for forbidden file %q:\n%s", f, patch)
+		}
+	}
+}

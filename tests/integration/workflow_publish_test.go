@@ -55,6 +55,12 @@ func getPublishScriptPath(t *testing.T) string {
 // runPublishScript runs publish_comments.py against a hermetic Go httptest mock GitHub API server.
 func runPublishScript(t *testing.T, envelopePath string, simulate422 bool) mockExecutionResult {
 	t.Helper()
+	return runPublishScriptWithArgs(t, simulate422, envelopePath)
+}
+
+// runPublishScriptWithArgs runs publish_comments.py with custom arguments against a hermetic Go httptest mock GitHub API server.
+func runPublishScriptWithArgs(t *testing.T, simulate422 bool, args ...string) mockExecutionResult {
+	t.Helper()
 	scriptPath := getPublishScriptPath(t)
 
 	// If script doesn't exist, fail immediately with clear TDD message
@@ -128,10 +134,10 @@ func runPublishScript(t *testing.T, envelopePath string, simulate422 bool) mockE
 		"COMMIT_SHA=abc1234567890abcdef",
 		"GITHUB_TOKEN=mock-gh-token",
 		"GITHUB_STEP_SUMMARY="+summaryFile,
-		"ENVELOPE_PATH="+envelopePath,
 	)
 
-	stdout, stderr, exitCode := runCommandWithEnv(t, 5*time.Second, "", nil, env, "python3", scriptPath, envelopePath)
+	cmdArgs := append([]string{scriptPath}, args...)
+	stdout, stderr, exitCode := runCommandWithEnv(t, 5*time.Second, "", nil, env, "python3", cmdArgs...)
 
 	var summaryContent string
 	if data, err := os.ReadFile(summaryFile); err == nil {
@@ -206,6 +212,9 @@ func TestWorkflow_PublishComments(t *testing.T) {
 	t.Run("StepSummaryGeneration", testWorkflowPublishStepSummary)
 	t.Run("DualExecutionMode", testWorkflowPublishDualExecutionMode)
 	t.Run("AdvisoryFindings", testWorkflowPublishAdvisoryFindings)
+	t.Run("SummaryMode_FindingsList", testWorkflowPublishSummaryModeList)
+	t.Run("SummaryMode_PolymorphicDict", testWorkflowPublishSummaryModePolymorphicDict)
+	t.Run("InlineMode_ExplicitFlag", testWorkflowPublishInlineModeExplicit)
 }
 
 // Scenario 1: Publish single-line review suggestion comment (REQ-0006, REQ-TEST.2)
@@ -247,11 +256,8 @@ func testWorkflowPublishSingleLineSuggestion(t *testing.T) {
 	}
 
 	// Verify suggestion markdown body formatting per REQ-0006
-	if !strings.Contains(comment.Body, "### 🛡️ CodeMender Auto-Fix: SQL Injection in User Lookup") {
+	if !strings.Contains(comment.Body, "### 🛡️ CodeMender Fix: SQL Injection in User Lookup") {
 		t.Errorf("comment.Body missing expected header title, got:\n%s", comment.Body)
-	}
-	if !strings.Contains(comment.Body, "CWE-89") {
-		t.Errorf("comment.Body missing vulnerability type CWE-89, got:\n%s", comment.Body)
 	}
 	if !strings.Contains(comment.Body, "```suggestion") {
 		t.Errorf("comment.Body missing ```suggestion markdown block, got:\n%s", comment.Body)
@@ -591,5 +597,112 @@ func testWorkflowPublishAdvisoryFindings(t *testing.T) {
 	summaryStr := string(summaryBytes)
 	if !strings.Contains(summaryStr, "Potentially Preexisting Security Finding") {
 		t.Errorf("summary missing Potentially Preexisting headline: %s", summaryStr)
+	}
+}
+
+// Scenario 8: Publish executive summary in Summary Mode from findings list (REQ-0006, REQ-0007)
+func testWorkflowPublishSummaryModeList(t *testing.T) {
+	dir := getWorkflowFixturesDir(t)
+	findingsPath := filepath.Join(dir, "findings_in_diff.json")
+
+	result := runPublishScriptWithArgs(t, false, "--mode=summary", findingsPath)
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	if len(result.ReviewComments) != 0 {
+		t.Fatalf("expected 0 review comments in summary mode, got %d", len(result.ReviewComments))
+	}
+	if len(result.IssueComments) != 1 {
+		t.Fatalf("expected exactly 1 top-level issue comment in summary mode, got %d", len(result.IssueComments))
+	}
+
+	body := result.IssueComments[0].Body
+	// Verify Table columns
+	requiredHeaders := []string{"Severity", "Status", "Finding", "Location", "Action"}
+	for _, h := range requiredHeaders {
+		if !strings.Contains(body, h) {
+			t.Errorf("summary comment body missing table header %q:\n%s", h, body)
+		}
+	}
+
+	// Verify collapsible vulnerability analysis
+	if !strings.Contains(body, "<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>") {
+		t.Errorf("summary comment body missing collapsible threat analysis section:\n%s", body)
+	}
+
+	// Verify step summary contains the markdown report
+	if !strings.Contains(result.StepSummary, "<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>") {
+		t.Errorf("step summary missing collapsible threat analysis section:\n%s", result.StepSummary)
+	}
+}
+
+// Scenario 9: Publish executive summary in Summary Mode with polymorphic single dict input
+func testWorkflowPublishSummaryModePolymorphicDict(t *testing.T) {
+	tempDir := t.TempDir()
+	polyFile := filepath.Join(tempDir, "single_finding.json")
+	content := `{
+		"finding_id": "poly-123",
+		"severity": "CRITICAL",
+		"vuln_type": "CWE-78",
+		"title": "OS Command Injection",
+		"file_path": "pkg/exec/runner.go",
+		"start_line": 55,
+		"analysis": "Unsanitized input passed directly to shell execution."
+	}`
+	if err := os.WriteFile(polyFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write poly fixture: %v", err)
+	}
+
+	result := runPublishScriptWithArgs(t, false, "--mode=summary", polyFile)
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	if len(result.ReviewComments) != 0 {
+		t.Fatalf("expected 0 review comments in summary mode, got %d", len(result.ReviewComments))
+	}
+	if len(result.IssueComments) != 1 {
+		t.Fatalf("expected exactly 1 top-level issue comment, got %d", len(result.IssueComments))
+	}
+
+	body := result.IssueComments[0].Body
+	if !strings.Contains(body, "CRITICAL") {
+		t.Errorf("summary comment body missing severity CRITICAL:\n%s", body)
+	}
+	if !strings.Contains(body, "OS Command Injection") {
+		t.Errorf("summary comment body missing finding title:\n%s", body)
+	}
+	if !strings.Contains(body, "pkg/exec/runner.go:55") {
+		t.Errorf("summary comment body missing location pkg/exec/runner.go:55:\n%s", body)
+	}
+	if !strings.Contains(body, "<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>") {
+		t.Errorf("summary comment body missing collapsible details:\n%s", body)
+	}
+	if !strings.Contains(body, "Unsanitized input passed directly to shell execution.") {
+		t.Errorf("summary comment body missing analysis details:\n%s", body)
+	}
+}
+
+// Scenario 10: Publish inline suggestions with explicit --mode=inline flag
+func testWorkflowPublishInlineModeExplicit(t *testing.T) {
+	dir := getWorkflowFixturesDir(t)
+	envelopePath := filepath.Join(dir, "change_envelope_single_line.json")
+
+	result := runPublishScriptWithArgs(t, false, "--mode=inline", envelopePath)
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	if len(result.ReviewComments) != 1 {
+		t.Fatalf("expected exactly 1 review comment, got %d", len(result.ReviewComments))
+	}
+	if len(result.IssueComments) != 0 {
+		t.Fatalf("expected 0 issue comments, got %d", len(result.IssueComments))
+	}
+
+	comment := result.ReviewComments[0]
+	if !strings.Contains(comment.Body, "### 🛡️ CodeMender Fix: SQL Injection in User Lookup") {
+		t.Errorf("comment.Body missing expected header title, got:\n%s", comment.Body)
+	}
+	if !strings.Contains(comment.Body, "```suggestion") {
+		t.Errorf("comment.Body missing ```suggestion block, got:\n%s", comment.Body)
 	}
 }

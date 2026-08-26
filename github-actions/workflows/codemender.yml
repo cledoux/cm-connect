@@ -110,6 +110,14 @@ jobs:
               PUBLISH_SCRIPT=".github/scripts/publish_comments.py"
             fi
 
+            # Publish executive scan summary report
+            GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            GITHUB_REPOSITORY="${{ github.repository }}" \
+            PR_NUMBER="${{ github.event.pull_request.number }}" \
+            COMMIT_SHA="${{ github.event.pull_request.head.sha }}" \
+            GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY}" \
+            python3 "$PUBLISH_SCRIPT" --mode=summary .codemender-out/findings.json || true
+
             # 1. In-diff actionable findings for parallel fix matrix
             MATRIX_JSON=$(jq -c --rawfile diff .codemender-out/commit.diff --arg mode in_diff -f "$FILTER_SCRIPT" .codemender-out/findings.json)
             if [ -z "$MATRIX_JSON" ] || [ "$MATRIX_JSON" = "null" ] || [ "$MATRIX_JSON" = "[]" ]; then
@@ -215,7 +223,7 @@ jobs:
           fi
 
           if [ -f "change_envelope.json" ]; then
-            python3 "$PUBLISH_SCRIPT" change_envelope.json
+            python3 "$PUBLISH_SCRIPT" --mode=inline change_envelope.json
           else
             echo "No change envelope generated to publish."
           fi
