@@ -541,3 +541,113 @@ scan:
 		}
 	})
 }
+
+func TestConfig_EdgeCasesAndErrors(t *testing.T) {
+	t.Run("LoadConfigFile with empty content", func(t *testing.T) {
+		tempDir := t.TempDir()
+		emptyPath := filepath.Join(tempDir, "empty.yaml")
+		_ = os.WriteFile(emptyPath, []byte("   \n\t\n"), 0o600)
+		_, err := LoadConfigFile(emptyPath)
+		if err == nil {
+			t.Errorf("expected error on empty file, got nil")
+		}
+	})
+
+	t.Run("LoadConfigFile with comment-only content", func(t *testing.T) {
+		tempDir := t.TempDir()
+		commentPath := filepath.Join(tempDir, "comment.yaml")
+		_ = os.WriteFile(commentPath, []byte("# only a comment\n"), 0o600)
+		_, err := LoadConfigFile(commentPath)
+		if err == nil {
+			t.Errorf("expected error on comment-only file, got nil")
+		}
+	})
+
+	t.Run("LoadConfigFile with sequence root", func(t *testing.T) {
+		tempDir := t.TempDir()
+		seqPath := filepath.Join(tempDir, "seq.yaml")
+		_ = os.WriteFile(seqPath, []byte("- item1\n- item2\n"), 0o600)
+		_, err := LoadConfigFile(seqPath)
+		if err == nil {
+			t.Errorf("expected error on sequence root YAML, got nil")
+		}
+	})
+
+	t.Run("ApplyOverrides on uninitialized Config", func(t *testing.T) {
+		cfg := &Config{}
+		err := cfg.ApplyOverrides(map[string]any{"output.format": "json"})
+		if err == nil {
+			t.Errorf("expected error on empty Config AST, got nil")
+		}
+
+		cfg2 := &Config{
+			root: yaml.Node{
+				Kind:    yaml.DocumentNode,
+				Content: []*yaml.Node{{Kind: yaml.SequenceNode}},
+			},
+		}
+		err = cfg2.ApplyOverrides(map[string]any{"output.format": "json"})
+		if err == nil {
+			t.Errorf("expected error on non-mapping root node, got nil")
+		}
+	})
+
+	t.Run("Write error on invalid directory", func(t *testing.T) {
+		cfg := &Config{
+			path: "/non/existent/dir/cannot/write/config.yaml",
+			root: yaml.Node{
+				Kind:    yaml.DocumentNode,
+				Content: []*yaml.Node{{Kind: yaml.MappingNode}},
+			},
+		}
+		err := cfg.Write()
+		if err == nil {
+			t.Errorf("expected write error on non-existent path, got nil")
+		}
+	})
+
+	t.Run("Write error when path empty and HOME unset", func(t *testing.T) {
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Unsetenv("HOME")
+
+		cfg := &Config{
+			root: yaml.Node{
+				Kind:    yaml.DocumentNode,
+				Content: []*yaml.Node{{Kind: yaml.MappingNode}},
+			},
+		}
+		err := cfg.Write()
+		if err == nil {
+			t.Errorf("expected error when HOME unset and path empty, got nil")
+		}
+	})
+
+	t.Run("ApplyOverrides top-level errors", func(t *testing.T) {
+		origHome := os.Getenv("HOME")
+		defer os.Setenv("HOME", origHome)
+		os.Unsetenv("HOME")
+
+		err := ApplyOverrides(map[string]any{"output.format": "json"})
+		if err == nil {
+			t.Errorf("expected error when HOME is unset, got nil")
+		}
+	})
+
+	t.Run("findMappingChild and lookupPath validation", func(t *testing.T) {
+		nonMap := &yaml.Node{Kind: yaml.ScalarNode, Value: "foo"}
+		_, err := findMappingChild(nonMap, "key")
+		if err == nil {
+			t.Errorf("expected error on non-mapping node for findMappingChild, got nil")
+		}
+
+		oddMap := &yaml.Node{
+			Kind:    yaml.MappingNode,
+			Content: []*yaml.Node{{Kind: yaml.ScalarNode, Value: "key"}},
+		}
+		_, err = findMappingChild(oddMap, "key")
+		if err == nil {
+			t.Errorf("expected error on mapping with missing value node, got nil")
+		}
+	})
+}

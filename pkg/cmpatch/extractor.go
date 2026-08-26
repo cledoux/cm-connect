@@ -197,12 +197,31 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 	checkGit := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "rev-parse", "--is-inside-work-tree")
 	checkGit.Dir = workspaceDir
 	if err := checkGit.Run(); err == nil {
+		defer func() {
+			resetCmd := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "reset", "HEAD", "--", ".")
+			resetCmd.Dir = workspaceDir
+			_ = resetCmd.Run()
+		}()
+
+		pathspecExclusions := []string{
+			"--",
+			".",
+			":!.codemender",
+			":!.codemender-out",
+			":!change_envelope.json",
+			":!*creds*.json",
+			":!*.diff",
+			":!*.tmp",
+		}
+
 		// Stage untracked files intent so new files appear in git diff
-		stageCmd := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "add", "-N", ".")
+		stageArgs := append([]string{"-c", "safe.directory=*", "add", "-N"}, pathspecExclusions...)
+		stageCmd := exec.CommandContext(ctx, "git", stageArgs...)
 		stageCmd.Dir = workspaceDir
 		_ = stageCmd.Run()
 
-		diffCmd := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "diff", "HEAD")
+		diffArgs := append([]string{"-c", "safe.directory=*", "diff", "HEAD"}, pathspecExclusions...)
+		diffCmd := exec.CommandContext(ctx, "git", diffArgs...)
 		diffCmd.Dir = workspaceDir
 		out, err := diffCmd.Output()
 		if err == nil {
@@ -210,7 +229,8 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 		}
 
 		// Fallback to git diff (without HEAD in case no commits exist yet)
-		diffNoHead := exec.CommandContext(ctx, "git", "-c", "safe.directory=*", "diff")
+		diffNoHeadArgs := append([]string{"-c", "safe.directory=*", "diff"}, pathspecExclusions...)
+		diffNoHead := exec.CommandContext(ctx, "git", diffNoHeadArgs...)
 		diffNoHead.Dir = workspaceDir
 		outNoHead, errNoHead := diffNoHead.Output()
 		if errNoHead == nil {
@@ -220,7 +240,20 @@ func ExtractPatch(ctx context.Context, workspaceDir, fallbackDir string) (string
 
 	// Fallback to directory diff
 	if fallbackDir != "" {
-		diffCmd := exec.CommandContext(ctx, "diff", "-u", "-r", fallbackDir, workspaceDir)
+		diffArgs := []string{
+			"-u",
+			"-r",
+			"-x", ".git",
+			"-x", ".codemender",
+			"-x", ".codemender-out",
+			"-x", "change_envelope.json",
+			"-x", "*creds*.json",
+			"-x", "*.diff",
+			"-x", "*.tmp",
+			fallbackDir,
+			workspaceDir,
+		}
+		diffCmd := exec.CommandContext(ctx, "diff", diffArgs...)
 		out, err := diffCmd.CombinedOutput()
 		if err != nil {
 			var exitErr *exec.ExitError

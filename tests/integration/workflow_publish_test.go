@@ -201,6 +201,7 @@ func TestWorkflow_PublishComments(t *testing.T) {
 	t.Run("SingleLineSuggestion", testWorkflowPublishSingleLineSuggestion)
 	t.Run("MultilineSuggestion", testWorkflowPublishMultilineSuggestion)
 	t.Run("FallbackOnHTTP422", testWorkflowPublishFallbackOnHTTP422)
+	t.Run("FallbackOnHTTP422_MultiHunk", testWorkflowPublishFallbackOnHTTP422MultiHunk)
 	t.Run("UnresolvedFinding", testWorkflowPublishUnresolvedFinding)
 	t.Run("StepSummaryGeneration", testWorkflowPublishStepSummary)
 	t.Run("DualExecutionMode", testWorkflowPublishDualExecutionMode)
@@ -342,6 +343,62 @@ func testWorkflowPublishFallbackOnHTTP422(t *testing.T) {
 	}
 	if !strings.Contains(fallback.Body, "diff --git a/pkg/auth/store.go b/pkg/auth/store.go") {
 		t.Errorf("fallback.Body missing diff patch content, got:\n%s", fallback.Body)
+	}
+}
+
+// Scenario 3b: Handle HTTP 422 error across multiple hunks and deduplicate fallback issue comment
+// GIVEN a ChangeEnvelope with multiple hunks where createReviewComment rejects with HTTP 422
+// WHEN publish_comments.py catches the 422 error across multiple hunks
+// THEN it MUST post at most 1 top-level issue comment for the entire envelope.
+func testWorkflowPublishFallbackOnHTTP422MultiHunk(t *testing.T) {
+	tempDir := t.TempDir()
+	envelopePath := filepath.Join(tempDir, "change_envelope_multi_hunk.json")
+	multiHunkEnvelope := `{
+  "finding_id": "multi-hunk-uuid-422",
+  "status": "FIXED",
+  "vuln_type": "CWE-89",
+  "title": "SQL Injection across multiple functions",
+  "summary": "Applied parameterization across multiple queries.",
+  "files_modified": [
+    "pkg/auth/store.go"
+  ],
+  "patch": "diff --git a/pkg/auth/store.go b/pkg/auth/store.go\n--- a/pkg/auth/store.go\n+++ b/pkg/auth/store.go\n@@ -10,1 +10,1 @@\n-query1\n+query1_fixed\n@@ -50,1 +50,1 @@\n-query2\n+query2_fixed\n",
+  "hunks": [
+    {
+      "file_path": "pkg/auth/store.go",
+      "start_line": 10,
+      "end_line": 10,
+      "original": "query1\n",
+      "replacement": "query1_fixed\n"
+    },
+    {
+      "file_path": "pkg/auth/store.go",
+      "start_line": 50,
+      "end_line": 50,
+      "original": "query2\n",
+      "replacement": "query2_fixed\n"
+    }
+  ]
+}`
+	if err := os.WriteFile(envelopePath, []byte(multiHunkEnvelope), 0644); err != nil {
+		t.Fatalf("failed to write multi-hunk fixture: %v", err)
+	}
+
+	result := runPublishScript(t, envelopePath, true)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0 (graceful fallback), got %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	if len(result.ReviewComments) != 0 {
+		t.Fatalf("expected 0 review comments due to 422 rejection, got %d", len(result.ReviewComments))
+	}
+	if len(result.IssueComments) != 1 {
+		t.Fatalf("expected exactly 1 fallback issue comment for multi-hunk envelope, got %d", len(result.IssueComments))
+	}
+
+	fallback := result.IssueComments[0]
+	if !strings.Contains(fallback.Body, "SQL Injection across multiple functions") {
+		t.Errorf("fallback.Body missing finding title, got:\n%s", fallback.Body)
 	}
 }
 

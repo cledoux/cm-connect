@@ -161,28 +161,46 @@ func TestNewFixCommand(t *testing.T) {
 		expectedCmd []string
 	}{
 		{
-			name:        "defaults to inject -y and --unrestricted",
+			name:        "defaults to inject -y, --unrestricted, --bypass-warning, --sandbox=false",
 			findingID:   "uuid-1234",
 			flags:       nil,
-			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted"},
+			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted", "--bypass-warning", "--sandbox=false"},
 		},
 		{
 			name:        "forwards passthrough flags verbatim after headless defaults",
 			findingID:   "uuid-1234",
 			flags:       []string{"-c", "Sanitize input", "--architecture=3-1"},
-			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted", "-c", "Sanitize input", "--architecture=3-1"},
+			expectedCmd: []string{"fix", "uuid-1234", "-y", "--unrestricted", "--bypass-warning", "--sandbox=false", "-c", "Sanitize input", "--architecture=3-1"},
 		},
 		{
-			name:        "does not duplicate -y or --unrestricted when already present in flags",
+			name:        "does not duplicate flags when already present",
 			findingID:   "uuid-5678",
-			flags:       []string{"-y", "--unrestricted", "--model=gemini"},
-			expectedCmd: []string{"fix", "uuid-5678", "-y", "--unrestricted", "--model=gemini"},
+			flags:       []string{"-y", "--unrestricted", "--bypass-warning", "--sandbox=false", "--model=gemini"},
+			expectedCmd: []string{"fix", "uuid-5678", "-y", "--unrestricted", "--bypass-warning", "--sandbox=false", "--model=gemini"},
+		},
+		{
+			name:        "does not duplicate --yes when provided",
+			findingID:   "uuid-5678",
+			flags:       []string{"--yes"},
+			expectedCmd: []string{"fix", "uuid-5678", "--unrestricted", "--bypass-warning", "--sandbox=false", "--yes"},
 		},
 		{
 			name:        "empty finding id defaults to unknown",
 			findingID:   "",
 			flags:       nil,
-			expectedCmd: []string{"fix", "unknown", "-y", "--unrestricted"},
+			expectedCmd: []string{"fix", "unknown", "-y", "--unrestricted", "--bypass-warning", "--sandbox=false"},
+		},
+		{
+			name:        "does not inject default flags when --help is requested",
+			findingID:   "uuid-1234",
+			flags:       []string{"--help"},
+			expectedCmd: []string{"fix", "uuid-1234", "--help"},
+		},
+		{
+			name:        "does not inject default flags when -h is requested",
+			findingID:   "uuid-1234",
+			flags:       []string{"-h"},
+			expectedCmd: []string{"fix", "uuid-1234", "-h"},
 		},
 	}
 

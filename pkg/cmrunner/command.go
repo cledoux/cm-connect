@@ -126,30 +126,32 @@ func (c *FixCommand) SetArgs(args ...string) ([]string, error) {
 }
 
 // Cmd returns the complete command argument vector for 'cm fix'.
-// Automatically injects -y and --unrestricted for unattended headless remediation.
+// Automatically injects -y, --unrestricted, --bypass-warning, and --sandbox=false for unattended headless remediation
+// unless --help or -h is requested.
 func (c *FixCommand) Cmd() []string {
 	id := c.FindingID
 	if strings.TrimSpace(id) == "" {
 		id = "unknown"
 	}
 	args := []string{"fix", id}
+	if isHelpRequested(c.Flags) {
+		args = append(args, c.Flags...)
+		return args
+	}
 	if !hasYesFlag(c.Flags) {
 		args = append(args, "-y")
 	}
-	if !hasUnrestrictedFlag(c.Flags) {
+	if !hasExactFlag(c.Flags, "--unrestricted") {
 		args = append(args, "--unrestricted")
+	}
+	if !hasExactFlag(c.Flags, "--bypass-warning") {
+		args = append(args, "--bypass-warning")
+	}
+	if !hasExactFlag(c.Flags, "--sandbox=false") {
+		args = append(args, "--sandbox=false")
 	}
 	args = append(args, c.Flags...)
 	return args
-}
-
-func hasUnrestrictedFlag(flags []string) bool {
-	for _, f := range flags {
-		if f == "--unrestricted" {
-			return true
-		}
-	}
-	return false
 }
 
 // ImportCommand encapsulates parameters for seeding findings via 'cm report import'.

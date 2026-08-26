@@ -344,16 +344,19 @@ func (r *Runner) RunFixPipeline(
 	}
 
 	findingID, err := extractFindingID(reportBuf.Bytes())
-	if err != nil || findingID == "" {
+	if err != nil || findingID == "" || findingID == "unknown" {
 		if err != nil {
 			return ExitError, fmt.Errorf("failed to resolve FindingID from cm report: %w", err)
 		}
-		findingID = "unknown"
+		return ExitError, fmt.Errorf("invalid or unknown FindingID resolved from cm report: %q", findingID)
 	}
 
 	// Stage 4: Fix Execution via cm fix <FindingID> -y --unrestricted [passthrough flags]
 	fixCmd := NewFixCommand(findingID, passthroughFlags...)
-	_, _ = r.execSubprocess(ctx, fixCmd.Cmd(), nil, stderr, stderr)
+	code, err = r.execSubprocess(ctx, fixCmd.Cmd(), nil, stderr, stderr)
+	if code > 2 || (err != nil && code != ExitClean && code != ExitFindings) {
+		return ExitError, fmt.Errorf("fix subprocess execution failed (exit %d): %w", code, err)
+	}
 
 	// Stage 5: Patch Extraction & Change Envelope Synthesis (pkg/cmpatch)
 	diffStr, err := cmpatch.ExtractPatch(ctx, r.Workspace, "/workspace-ro")

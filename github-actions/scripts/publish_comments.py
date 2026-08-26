@@ -257,6 +257,7 @@ def publish_comments(
 
     review_comments_posted = 0
     issue_comments_posted = 0
+    fallback_posted = False
 
     review_endpoint = f"{base_api_url}/repos/{repository}/pulls/{pr_num}/comments"
     issue_endpoint = f"{base_api_url}/repos/{repository}/issues/{pr_num}/comments"
@@ -271,6 +272,7 @@ def publish_comments(
                 {"body": fallback_body},
             )
             issue_comments_posted += 1
+            fallback_posted = True
 
     # Process individual hunks
     for hunk in hunks:
@@ -303,7 +305,7 @@ def publish_comments(
                     f"[INFO] Line outside diff for {hunk.get('file_path')}:{end_line} (HTTP 422). Falling back to issue comment.",
                     file=sys.stderr,
                 )
-                if auth_token and repository and pr_num:
+                if auth_token and repository and pr_num and not fallback_posted:
                     fallback_body = format_fallback_issue_comment_body(env_data, hunk)
                     _send_github_api_request(
                         issue_endpoint,
@@ -311,6 +313,7 @@ def publish_comments(
                         {"body": fallback_body},
                     )
                     issue_comments_posted += 1
+                    fallback_posted = True
             else:
                 print(f"[ERROR] Failed to publish review comment: {err}", file=sys.stderr)
                 raise

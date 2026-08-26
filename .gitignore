@@ -1,7 +1,12 @@
 # CodeMender local workspace state and reports
 .codemender/
+.codemender-out/
 report.json
 *.report.json
+change_envelope.json
+findings.json
+*.diff
+*creds*.json
 
 # Temporary files and logs
 *.log

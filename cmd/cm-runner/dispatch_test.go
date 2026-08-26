@@ -541,6 +541,47 @@ func TestParseArgs_Fix(t *testing.T) {
 			t.Error("expected error for 'cm fix', got nil")
 		}
 	})
+
+	t.Run("nil stdin returns error", func(t *testing.T) {
+		_, err := parseArgs(tmpDir, []string{"fix", "-"}, nil)
+		if err == nil {
+			t.Error("expected error when stdin is nil, got nil")
+		}
+	})
+
+	t.Run("empty finding file returns error", func(t *testing.T) {
+		emptyFinding := filepath.Join(tmpDir, "empty_finding.json")
+		_ = os.WriteFile(emptyFinding, []byte("   \n"), 0644)
+		_, err := parseArgs(tmpDir, []string{"fix", emptyFinding}, nil)
+		if err == nil {
+			t.Error("expected error on empty finding file, got nil")
+		}
+	})
+
+	t.Run("relative path inside workspace resolves correctly", func(t *testing.T) {
+		subDir := filepath.Join(tmpDir, "reports")
+		_ = os.MkdirAll(subDir, 0755)
+		relFile := filepath.Join(subDir, "rel_finding.json")
+		_ = os.WriteFile(relFile, []byte(sampleJSON), 0644)
+
+		plan, err := parseArgs(tmpDir, []string{"fix", "reports/rel_finding.json"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(plan.RawFinding) != sampleJSON {
+			t.Errorf("expected %q, got %q", sampleJSON, string(plan.RawFinding))
+		}
+	})
+
+	t.Run("help flag after double dash returns ActionHelp", func(t *testing.T) {
+		plan, err := parseArgs(tmpDir, []string{"fix", findingFile, "--", "--help"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if plan.Action != ActionHelp {
+			t.Errorf("expected ActionHelp, got %v", plan.Action)
+		}
+	})
 }
 
 func TestParseArgs_FindDiff(t *testing.T) {
@@ -622,6 +663,17 @@ func TestParseArgs_FindDiff(t *testing.T) {
 				GitDiffArgs: []string{"HEAD"},
 				PassthroughFlags: []string{
 					"--context=The target is a Git unified diff for this repository. Check XSS",
+				},
+			},
+		},
+		{
+			name: "consolidates empty user context flag -c=''",
+			args: []string{"find-diff", "--", "-c="},
+			expectedPlan: DispatchPlan{
+				Action:      ActionFindDiff,
+				GitDiffArgs: []string{"HEAD"},
+				PassthroughFlags: []string{
+					"--context=The target is a Git unified diff for this repository.",
 				},
 			},
 		},

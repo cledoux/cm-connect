@@ -494,3 +494,146 @@ func TestParseDiff_NoNewlineMarker(t *testing.T) {
 		t.Fatalf("expected 1 hunk, got %d", len(hunks))
 	}
 }
+
+func TestExtractPatch_ExcludesMetadataAndCredentials_Git(t *testing.T) {
+	t.Parallel()
+
+	ws := t.TempDir()
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = ws
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v (%s)", err, string(out))
+	}
+	_ = exec.Command("git", "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "config", "user.email", "test@example.com").Run()
+
+	appFile := filepath.Join(ws, "app.go")
+	if err := os.WriteFile(appFile, []byte("package main\nfunc Old() {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write app.go: %v", err)
+	}
+
+	cmdAdd := exec.Command("git", "add", "app.go")
+	cmdAdd.Dir = ws
+	_ = cmdAdd.Run()
+	cmdCommit := exec.Command("git", "commit", "-m", "initial")
+	cmdCommit.Dir = ws
+	_ = cmdCommit.Run()
+
+	// Modify app.go
+	if err := os.WriteFile(appFile, []byte("package main\nfunc New() {}\n"), 0644); err != nil {
+		t.Fatalf("failed to modify app.go: %v", err)
+	}
+
+	// Create an untracked legitimate source file
+	helperDir := filepath.Join(ws, "pkg", "auth")
+	_ = os.MkdirAll(helperDir, 0755)
+	if err := os.WriteFile(filepath.Join(helperDir, "new_helper.go"), []byte("package auth\n"), 0644); err != nil {
+		t.Fatalf("failed to write new_helper.go: %v", err)
+	}
+
+	// Create metadata and credentials files that MUST be excluded
+	_ = os.MkdirAll(filepath.Join(ws, ".codemender"), 0755)
+	_ = os.WriteFile(filepath.Join(ws, ".codemender", "state.json"), []byte(`{"state":1}`), 0644)
+	_ = os.MkdirAll(filepath.Join(ws, ".codemender-out"), 0755)
+	_ = os.WriteFile(filepath.Join(ws, ".codemender-out", "report.json"), []byte(`{"report":1}`), 0644)
+	_ = os.WriteFile(filepath.Join(ws, "change_envelope.json"), []byte(`{"status":"FIXED"}`), 0644)
+	_ = os.WriteFile(filepath.Join(ws, "gcp_creds_sa.json"), []byte(`{"private_key":"secret"}`), 0644)
+	_ = os.WriteFile(filepath.Join(ws, "pull-request.diff"), []byte(`diff content`), 0644)
+	_ = os.WriteFile(filepath.Join(ws, "debug.tmp"), []byte(`temp data`), 0644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	patch, err := ExtractPatch(ctx, ws, "")
+	if err != nil {
+		t.Fatalf("ExtractPatch failed: %v", err)
+	}
+
+	if !strings.Contains(patch, "app.go") {
+		t.Errorf("expected patch to contain app.go, got:\n%s", patch)
+	}
+	if !strings.Contains(patch, "new_helper.go") {
+		t.Errorf("expected patch to contain untracked new_helper.go, got:\n%s", patch)
+	}
+
+	forbidden := []string{
+		".codemender",
+		".codemender-out",
+		"change_envelope.json",
+		"gcp_creds_sa.json",
+		"pull-request.diff",
+		"debug.tmp",
+		"secret",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(patch, f) {
+			t.Errorf("patch contains excluded file or secret %q:\n%s", f, patch)
+		}
+	}
+
+	// Verify index was reset (no staged changes)
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = ws
+	out, err := statusCmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
+	statusStr := string(out)
+	for _, line := range strings.Split(statusStr, "\n") {
+		if len(line) >= 2 && (line[0] == 'A' || line[0] == 'M' || line[0] == 'D') {
+			t.Errorf("index contains staged changes after reset: %q", line)
+		}
+	}
+}
+
+func TestExtractPatch_ExcludesMetadataAndCredentials_Fallback(t *testing.T) {
+	t.Parallel()
+
+	roDir := t.TempDir()
+	rwDir := t.TempDir()
+
+	fileRO := filepath.Join(roDir, "app.go")
+	fileRW := filepath.Join(rwDir, "app.go")
+	_ = os.WriteFile(fileRO, []byte("package main\nfunc Old() {}\n"), 0644)
+	_ = os.WriteFile(fileRW, []byte("package main\nfunc New() {}\n"), 0644)
+
+	// Create excluded files in rwDir
+	_ = os.MkdirAll(filepath.Join(rwDir, ".codemender"), 0755)
+	_ = os.WriteFile(filepath.Join(rwDir, ".codemender", "state.json"), []byte(`{"state":1}`), 0644)
+	_ = os.MkdirAll(filepath.Join(rwDir, ".codemender-out"), 0755)
+	_ = os.WriteFile(filepath.Join(rwDir, ".codemender-out", "report.json"), []byte(`{"report":1}`), 0644)
+	_ = os.WriteFile(filepath.Join(rwDir, "change_envelope.json"), []byte(`{"status":"FIXED"}`), 0644)
+	_ = os.WriteFile(filepath.Join(rwDir, "my_creds.json"), []byte(`{"private_key":"secret"}`), 0644)
+	_ = os.WriteFile(filepath.Join(rwDir, "export.diff"), []byte(`diff`), 0644)
+	_ = os.WriteFile(filepath.Join(rwDir, "scratch.tmp"), []byte(`temp`), 0644)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	patch, err := ExtractPatch(ctx, rwDir, roDir)
+	if err != nil {
+		t.Fatalf("ExtractPatch failed: %v", err)
+	}
+
+	if !strings.Contains(patch, "app.go") || !strings.Contains(patch, "func New()") {
+		t.Errorf("expected patch to contain diff for app.go, got:\n%s", patch)
+	}
+
+	forbidden := []string{
+		".codemender",
+		".codemender-out",
+		"change_envelope.json",
+		"my_creds.json",
+		"export.diff",
+		"scratch.tmp",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(patch, "--- "+filepath.Join(roDir, f)) || strings.Contains(patch, "+++ "+filepath.Join(rwDir, f)) || strings.Contains(patch, "Only in") {
+			t.Errorf("fallback patch contains diff for excluded file %q:\n%s", f, patch)
+		}
+	}
+	if strings.Contains(patch, "secret") {
+		t.Errorf("fallback patch contains secret data:\n%s", patch)
+	}
+}

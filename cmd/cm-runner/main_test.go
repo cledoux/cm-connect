@@ -790,3 +790,66 @@ func TestEnsureProjectEnv(t *testing.T) {
 		}
 	})
 }
+
+func TestRun_HelpAction(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find", "--help"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitClean {
+		t.Errorf("expected ExitClean (0) for find --help, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "cm-runner find") {
+		t.Errorf("expected usage output on stdout, got: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitUsage {
+		t.Errorf("expected ExitUsage (2) for top-level --help, got %d", code)
+	}
+}
+
+func TestRun_FindDiff_DisableResetError(t *testing.T) {
+	tmpHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpHome)
+
+	cmDir := filepath.Join(tmpHome, ".codemender")
+	_ = os.MkdirAll(cmDir, 0755)
+	configPath := filepath.Join(cmDir, "config.yaml")
+	// Config without vcs section so DisableReset fails
+	noVCSConfig := `
+scan:
+  extensions:
+    include:
+      - ".go"
+`
+	_ = os.WriteFile(configPath, []byte(noVCSConfig), 0600)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"find-diff", "HEAD"}, strings.NewReader(""), &stdout, &stderr, t.TempDir(), "/bin/true")
+	if code != cmrunner.ExitError {
+		t.Fatalf("expected ExitError (>2) when DisableReset fails, got %d (stderr: %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "failed to disable VCS reset") {
+		t.Errorf("expected error on stderr, got: %s", stderr.String())
+	}
+}
+
+func TestMainFunction(t *testing.T) {
+	if os.Getenv("TEST_RUN_MAIN") == "1" {
+		os.Args = []string{"cm-runner", "find", "--help"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainFunction$")
+	cmd.Env = append(os.Environ(), "TEST_RUN_MAIN=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("main failed: %v (%s)", err, string(out))
+	}
+	if !strings.Contains(string(out), "cm-runner find") {
+		t.Errorf("expected usage output, got: %s", string(out))
+	}
+}

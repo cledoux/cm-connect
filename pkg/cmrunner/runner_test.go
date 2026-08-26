@@ -842,3 +842,121 @@ exit 0
 		t.Errorf("expected ExitFindings (1), got %d", code)
 	}
 }
+
+func TestRunner_RunFixPipeline_FindingIDUnknownFailsFast(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, "foo.go"), []byte("package foo\n"), 0644)
+
+	mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+	scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"unknown"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    echo "SHOULD_NOT_BE_CALLED" >&2
+    exit 0
+fi
+exit 0
+`
+	_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+	runner := NewRunner(
+		WithExecutable(mockCM),
+		WithWorkspace(wsDir),
+	)
+
+	var stdout, stderr bytes.Buffer
+	ctx := context.Background()
+	code, err := runner.RunFixPipeline(ctx, []byte(`{"FilePath": "foo.go", "Title": "Issue"}`), nil, &stdout, &stderr)
+	if code != ExitError {
+		t.Errorf("expected ExitError (3) for unknown finding ID, got %d", code)
+	}
+	if err == nil {
+		t.Errorf("expected error for unknown finding ID, got nil")
+	}
+	if strings.Contains(stderr.String(), "SHOULD_NOT_BE_CALLED") {
+		t.Errorf("Stage 4 executed despite unknown FindingID failure: stderr=%q", stderr.String())
+	}
+}
+
+func TestRunner_RunFixPipeline_SubprocessCrash(t *testing.T) {
+	crashCodes := []struct {
+		name     string
+		exitCode int
+	}{
+		{name: "OOM / SIGKILL exit 137", exitCode: 137},
+		{name: "Command not found exit 127", exitCode: 127},
+		{name: "CLI usage error exit 2", exitCode: 2},
+	}
+
+	for _, tc := range crashCodes {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			wsDir := filepath.Join(tmpDir, "workspace")
+			_ = os.MkdirAll(wsDir, 0755)
+			_ = os.WriteFile(filepath.Join(wsDir, "foo.go"), []byte("package foo\n"), 0644)
+
+			mockCM := filepath.Join(tmpDir, "mock-cm.sh")
+			scriptContent := `#!/bin/sh
+if [ "$1" = "report" ] && [ "$2" = "import" ]; then
+    exit 0
+elif [ "$1" = "report" ] && [ "$2" = "--format=json" ]; then
+    echo '[{"FindingID":"crash-test-uuid"}]'
+    exit 0
+elif [ "$1" = "fix" ]; then
+    echo "Subprocess crashing with code ` + string(rune('0'+tc.exitCode/100)) + `..." >&2
+    exit ` + string(rune('0'+tc.exitCode/100)) + string(rune('0'+(tc.exitCode/10)%10)) + string(rune('0'+tc.exitCode%10)) + `
+fi
+exit 0
+`
+			// Use fmt.Sprintf for reliable script writing
+			scriptContent = "#!/bin/sh\n" +
+				"if [ \"$1\" = \"report\" ] && [ \"$2\" = \"import\" ]; then\n" +
+				"    exit 0\n" +
+				"elif [ \"$1\" = \"report\" ] && [ \"$2\" = \"--format=json\" ]; then\n" +
+				"    echo '[{\"FindingID\":\"crash-test-uuid\"}]'\n" +
+				"    exit 0\n" +
+				"elif [ \"$1\" = \"fix\" ]; then\n" +
+				"    echo \"Subprocess crash output\" >&2\n" +
+				"    exit " + string([]byte{byte('0' + tc.exitCode/100), byte('0' + (tc.exitCode/10)%10), byte('0' + tc.exitCode%10)}) + "\n" +
+				"fi\n" +
+				"exit 0\n"
+			if tc.exitCode < 10 {
+				scriptContent = "#!/bin/sh\n" +
+					"if [ \"$1\" = \"report\" ] && [ \"$2\" = \"import\" ]; then\n" +
+					"    exit 0\n" +
+					"elif [ \"$1\" = \"report\" ] && [ \"$2\" = \"--format=json\" ]; then\n" +
+					"    echo '[{\"FindingID\":\"crash-test-uuid\"}]'\n" +
+					"    exit 0\n" +
+					"elif [ \"$1\" = \"fix\" ]; then\n" +
+					"    echo \"Subprocess crash output\" >&2\n" +
+					"    exit " + string([]byte{byte('0' + tc.exitCode)}) + "\n" +
+					"fi\n" +
+					"exit 0\n"
+			}
+			_ = os.WriteFile(mockCM, []byte(scriptContent), 0755)
+
+			runner := NewRunner(
+				WithExecutable(mockCM),
+				WithWorkspace(wsDir),
+			)
+
+			var stdout, stderr bytes.Buffer
+			ctx := context.Background()
+			code, err := runner.RunFixPipeline(ctx, []byte(`{"FilePath": "foo.go", "Title": "Issue"}`), nil, &stdout, &stderr)
+			if code != ExitError {
+				t.Errorf("expected ExitError (3) on fix crash with exit %d, got %d", tc.exitCode, code)
+			}
+			if err == nil {
+				t.Errorf("expected non-nil error on fix crash with exit %d, got nil", tc.exitCode)
+			}
+			if stdout.Len() > 0 {
+				t.Errorf("expected no envelope on stdout on fix crash, got: %s", stdout.String())
+			}
+		})
+	}
+}
