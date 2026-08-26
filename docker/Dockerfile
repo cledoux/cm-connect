@@ -52,6 +52,8 @@ RUN if ! getent group "${USER_GID}" >/dev/null 2>&1; then groupadd -g "${USER_GI
 # Configure system and global safe.directory to allow git operations on mounted repos across UIDs
 RUN git config --system --add safe.directory "*"
 
+ENV HOME=/home/codemender
+
 USER codemender
 WORKDIR /workspace
 
@@ -61,4 +63,9 @@ RUN git config --global --add safe.directory "*"
 RUN cm init \
     && /usr/local/bin/cm-runner init
 
+USER root
+RUN chmod -R 777 /home/codemender /tmp
+USER codemender
+
 ENTRYPOINT ["/usr/local/bin/cm-runner"]
+
