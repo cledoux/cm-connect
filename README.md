@@ -4,12 +4,12 @@
 
 `cm-connect` is an orchestrator that transforms the
 [CodeMender](https://docs.cloud.google.com/gemini-enterprise-agent-platform/codemender/set-up-environment)
-(`cm`) binary into a **stateless, deterministic job** that requires zero local
+(`cm`) binary into a **stateless, self-contained job** that requires zero local
 storage to survive across executions.
 
 ______________________________________________________________________
 
-## Why Does This Repo Exist?
+## Background & Problem Statement
 
 CodeMender is Google's AI-driven security reasoning engine, capable of finding
 vulnerabilities, verifying exploitability, and automatically synthesizing code
@@ -18,66 +18,69 @@ remediations.
 However, CodeMender is designed out of the box as a stateful, interactive
 developer CLI:
 
-- **Stateful Local Storage:** It expects a local SQLite database
+- **Local State Persistence:** It relies on a local SQLite database
   (`~/.codemender/state.db`) to track sessions, findings, and remediation
-  workflows.
-- **Interactive Stalls:** It prompts the user interactively before running
-  commands or modifying files (`confirm_commands`, `confirm_writes`).
+  workflows across runs.
+- **Interactive Terminal Prompts:** It prompts for user confirmation before
+  executing commands or modifying files (`confirm_commands`, `confirm_writes`).
 - **In-Place Working Tree Mutations:** Dynamic exploit verification and patch
   generation write directly to the local repository, littering the workspace
-  with build artifacts, dependencies, and partial edits.
+  with build outputs, dependencies, and partial edits.
 
-### The Problem in Modern CI/CD & Cloud Pipelines
+### The Challenge in Ephemeral CI/CD & Cloud Environments
 
-In automated CI/CD runners (such as GitHub Actions), serverless environments
-(Cloud Run), and container clusters (GKE):
+In automated CI/CD pipelines (such as GitHub Actions), serverless environments
+(Cloud Run), and container clusters (GKE), these assumptions break down:
 
-- **Persistent local storage does not exist** across ephemeral runner VMs or
-  container jobs.
-- **Shared SQLite databases lock up** when multiple concurrent worker jobs try
-  to write simultaneously.
-- **Dirty host working copies** corrupt subsequent build steps or cause flaky
-  tests.
-- **Interactive prompts** hang headless automation indefinitely.
+- **Ephemeral storage:** Runner VMs and serverless jobs discard local storage
+  upon job completion.
+- **Database concurrency:** Shared SQLite databases lock up under concurrent
+  parallel workers.
+- **Workspace pollution:** Dirty working copies corrupt downstream build steps
+  and produce flaky test runs.
+- **Automation blocking:** Interactive prompts stall headless CI jobs
+  indefinitely.
 
-**If you want to run CodeMender reliably in CI/CD, parallel PR review gating, or
-ephemeral cloud jobs without managing persistent host disks or dealing with
-broken workspaces, `cm-connect` is built for you.**
+`cm-connect` is designed to solve these challenges by decoupling CodeMender from
+local persistent state and wrapping it in an unprivileged, ephemeral container
+architecture tailored for automated CI/CD and cloud orchestration.
 
 ______________________________________________________________________
 
-## The Solution: A Stateless Orchestrator & Ephemeral Container Protocol
+## The Solution: Architecture & Container Protocol
 
 `cm-connect` wraps CodeMender in an ultra-lightweight orchestrator and container
-protocol designed specifically for headless, parallel, and stateless execution:
+protocol built for headless, parallel, and stateless execution:
 
-1. **Lightweight Compiled Go Orchestrator (`cm-runner`):**
-   - Statically compiled Go entrypoint with sub-millisecond (~1ms) startup
-     latency and zero external runtime dependencies (`go.mod` stdlib only).
-   - Enforces exact subcommand routing (`find`, `find-diff`, `fix`, `shell`),
-     process group signal propagation (`Setpgid: true`), and strict I/O stream
-     separation (`stdout` pure JSON / `stderr` operational diagnostics).
+1. **Stateless Lifecycle Orchestration (`cm-runner`):**
+   - Coordinates CodeMender's scanning and remediation phases as independent,
+     self-contained batch tasks starting from a blank slate with zero local
+     database requirements.
+   - Provides sub-millisecond startup, exact subcommand routing, and clean
+     process signal management.
 1. **Ephemeral Copy-on-Write Workspace Sandbox (OverlayFS):**
-   - The host repository is mounted **strictly read-only** (`:ro`).
-   - An ephemeral Copy-on-Write (CoW) layer (`fuse-overlayfs`) intercepts all
-     filesystem mutations.
-   - CodeMender gets unrestricted POSIX read/write access to compile code, run
-     test suites, and generate patches, while the host working copy remains
-     **100% untouched and pristine**.
-   - Patches are cleanly extracted as unified Git diffs (`.patch`) from the CoW
+   - Mounts the host repository **strictly read-only** (`:ro`) and intercepts
+     all filesystem mutations in an ephemeral scratch layer (`fuse-overlayfs`).
+   - The AI reasoning agent enjoys unrestricted POSIX read/write access to
+     compile code, run test suites, and generate fixes, while guaranteeing that
+     the host working copy remains **100% untouched and pristine**.
+   - Patches are cleanly extracted as Git unified diffs (`.patch`) from the
      scratch layer.
-1. **Stateless Lifecycle Decoupling:**
+1. **Single-Finding Granularity & Decoupled Execution:**
    - Decouples vulnerability discovery (`find` / `find-diff`) from patch
      remediation (`fix`).
-   - Each remediation job runs statelessly on a single finding payload,
-     eliminating multi-finding patch collisions and database lock contention.
-1. **Strict Userspace Security:**
-   - Runs strictly as an unprivileged, non-root user (`codemender`, UID 1000,
-     GID 1000).
-1. **Keyless Cloud Authentication:**
-   - Native support for Google Cloud Application Default Credentials (ADC),
-     OAuth access tokens (`CLOUDSDK_AUTH_ACCESS_TOKEN`), and Workload Identity
-     Federation (WIF) with GitHub Actions OIDC.
+   - Each remediation job targets a single finding payload, enabling massive
+     parallelization across concurrent workers without patch collisions or state
+     locking.
+1. **Stream Isolation & Machine-Readable Contracts:**
+   - Strictly isolates pure machine-readable data payloads (structured JSON
+     findings and patch envelopes on `stdout`) from operational logs, progress
+     spinners, and diagnostic telemetry (`stderr`), enabling direct integration
+     with downstream CI/CD tools.
+1. **Userspace Security & Keyless Cloud Auth:**
+   - Enforces unprivileged non-root execution (`codemender`, UID 1000) and
+     integrates natively with Google Cloud Workload Identity Federation (WIF)
+     and Application Default Credentials (ADC) for keyless AI model access.
 
 *For detailed architectural specifications and design rationale, see our
 [Architecture Decision Records](adrs/index.md) and
