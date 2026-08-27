@@ -206,7 +206,7 @@ flowchart TD
      keeping `/workspace` as the root context.
    - **Path Error:** If the sub-path does not exist in `/workspace`, `cm-runner`
      terminates immediately with exit code 2 and outputs an error to `stderr`.
-1. **Authentication Channel:**
+1. **Authentication Channel & Project Auto-Population:**
    - **Access Token:**
      `-e CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"` (ideal
      for ephemeral CI runners).
@@ -215,6 +215,10 @@ flowchart TD
    - **Host ADC Directory:**
      `-v ~/.config/gcloud:/home/codemender/.config/gcloud:ro` (ideal for local
      development).
+   - **Project Auto-Population:** If `GOOGLE_CLOUD_PROJECT` or
+     `CLOUDSDK_CORE_PROJECT` is unset, `cm-runner` inspects the credential file
+     at `GOOGLE_APPLICATION_CREDENTIALS` (or standard ADC paths) to extract
+     `project_id` and exports `GOOGLE_CLOUD_PROJECT` to child subprocesses.
 1. **Command & Argument Channel:**
    - Explicit CLI tokens passed to `docker run <image> <subcommand> [flags]`.
    - Partitioned by `--`: target path before `--`, uninspected `cm find` flags
