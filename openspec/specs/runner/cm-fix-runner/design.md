@@ -100,7 +100,7 @@ flowchart TD
             Stage2["Stage 2: State Seeding<br>cm report import -f /tmp/cm-import.json -p /workspace"]
             Stage3["Stage 3: ID Resolution<br>cm report --format=json -> Resolves FindingID"]
             Stage4["Stage 4: Fix Execution<br>cm fix &lt;FindingID&gt; -y --unrestricted [passthrough flags]"]
-            Stage5["Stage 5: Patch Extraction (pkg/cmpatch)<br>git diff HEAD in OverlayFS -> Change Envelope"]
+            Stage5["Stage 5: Patch Extraction (pkg/cmpatch)<br>git diff HEAD with pathspec exclusions -> Change Envelope"]
         end
 
         SQLiteDB["Ephemeral SQLite DB<br>/home/codemender/.codemender/state.db"]

@@ -45,14 +45,15 @@ capability focuses on:
 1. **Dynamic Parallel Matrix Dispatch:** Slices the findings stream into
    isolated, concurrent matrix jobs (`strategy: matrix`), avoiding runner lock
    contention and scaling remediation throughput.
-1. **Structured PR Review Suggestions:** Translates `ChangeEnvelope` hunk
-   records into inline GitHub Pull Request Review comments
-   (`POST /pulls/{id}/reviews`) with 1-click apply markdown
-   ```` ```suggestion ```` blocks.
+1. **Two-Tier PR Commenting Architecture:** Combines an executive scan summary
+   report (Tier 1: total findings, metrics breakdown, structured table,
+   collapsible threat analysis) during the scan phase with lightweight inline
+   review suggestions (Tier 2: 1-click apply markdown ```` ```suggestion ````
+   blocks) during the fix phase.
 1. **Diff-Boundary Fallback Handling:** Intersects finding coordinates against
    `commit.diff`, routing out-of-diff findings to PR issue comments or
    `$GITHUB_STEP_SUMMARY` to prevent GitHub API `422 Unprocessable Entity`
-   errors.
+   errors with per-envelope deduplication.
 1. **Dedicated `github-actions/` Structure & Automated Installer:** Packages all
    deliverables under `github-actions/`
    (`github-actions/workflows/codemender.yml`, `github-actions/install.sh`,
@@ -71,9 +72,10 @@ capability focuses on:
 - Enable massive parallelization of remediation jobs via dynamic GitHub Actions
   matrices.
 - Use keyless Google Cloud Workload Identity Federation for all AI interactions.
-- Post 1-click apply inline code suggestions directly in GitHub PR review
-  threads.
-- Prevent GitHub API 422 errors through intelligent diff-boundary fallbacks.
+- Provide executive scan summary reports (Tier 1) and 1-click apply inline code
+  suggestions (Tier 2) directly in GitHub PR review threads.
+- Prevent GitHub API 422 errors through intelligent diff-boundary fallbacks and
+  deduplication.
 - Provide an automated installer script (`github-actions/install.sh`) to build
   and push the container image to the target repository's GHCR namespace,
   template the workflow, and copy assets with zero manual configuration errors.
@@ -106,6 +108,7 @@ flowchart TD
         ExitTrap{"Trap Exit Code"}
         CleanExit["Exit 0: Clean / Empty Diff<br>outputs.has_findings = false"]
         FindingsExit["Exit 1: Findings Detected"]
+        Tier1Summary["Tier 1: Executive Scan Summary<br>publish_comments.py --mode=summary<br>(Summary Comment + Step Summary)"]
         MatrixGen["jq Dynamic Classifier & Matrix Generator"]
         InDiffStream["In-Diff Findings<br>outputs.has_findings = true<br>outputs.findings_matrix = [...]"]
         PreexistingStream["Out-of-Diff Preexisting Findings<br>(Non-Blocking Advisory)"]
@@ -113,7 +116,7 @@ flowchart TD
 
         Checkout --> WIFScan --> DockerFindDiff --> ExitTrap
         ExitTrap -->|"Code 0 (Clean)"| CleanExit
-        ExitTrap -->|"Code 1 (Findings)"| FindingsExit --> MatrixGen
+        ExitTrap -->|"Code 1 (Findings)"| FindingsExit --> Tier1Summary --> MatrixGen
         MatrixGen -->|"In-Diff Items"| InDiffStream
         MatrixGen -->|"Out-of-Diff Items"| PreexistingStream --> PostAdvisory
     end
@@ -122,7 +125,7 @@ flowchart TD
         direction TB
         MatrixItem["Matrix Item: finding[i]<br>(isolated VM / container)"]
         WIFFix["GCP WIF Authentication<br>google-github-actions/auth@v2"]
-        DockerFix["docker run cm-runner fix finding.json<br>(stdout -> ChangeEnvelope JSON)"]
+        DockerFix["cat finding.json | docker run cm-runner fix -<br>(stdout -> change_envelope.json)"]
         FixVerdict{"ChangeEnvelope Status"}
         Fixed["Status: FIXED<br>Extract Hunks & Patch"]
         Unresolved["Status: UNRESOLVED<br>Log diagnostic skip"]
@@ -132,11 +135,11 @@ flowchart TD
         FixVerdict -->|UNRESOLVED| Unresolved
     end
 
-    subgraph ReviewBot["4. PR Review Suggestion Publisher"]
+    subgraph ReviewBot["4. PR Review Suggestion Publisher (Tier 2)"]
         direction TB
         DiffCheck{"Is hunk line range inside<br>commit.diff hunks?"}
-        PostInline["POST /repos/{owner}/{repo}/pulls/{id}/reviews<br>Inline suggestion block"]
-        PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level PR Comment with diff"]
+        PostInline["POST /repos/{owner}/{repo}/pulls/{id}/comments<br>Inline suggestion block (--mode=inline)"]
+        PostFallback["POST /repos/{owner}/{repo}/issues/{id}/comments<br>Top-Level Fallback Comment with diff"]
         StepSummary["Emit to $GITHUB_STEP_SUMMARY"]
 
         Fixed --> DiffCheck
@@ -147,6 +150,7 @@ flowchart TD
 
     PR --> ScanJob
     InDiffStream -->|outputs.findings_matrix| FixMatrixJob
+    FixMatrixJob --> ReviewBot
 ```
 
 ______________________________________________________________________
@@ -254,7 +258,35 @@ Python 3 standard library script (`github-actions/scripts/publish_comments.py`)
 executed on the host runner VM. It interacts directly with the GitHub REST API
 via `urllib.request` using `$GITHUB_TOKEN` and `$GITHUB_API_URL`.
 
-### 1. In-Diff Inline Review Comment (Primary Path):
+### 1. Executive Scan Summary Report (Tier 1 — `--mode=summary`):
+
+Executed during the `scan` job when vulnerabilities are detected:
+
+- `issue_number`: PR Number
+- `body`:
+  ```markdown
+  ### 🛡️ CodeMender Security Scan Summary
+
+  **Total Findings:** 2 (**CRITICAL:** 1 | **HIGH:** 1)
+
+  | Severity | Status | Finding | Location | Action |
+  |---|---|---|---|---|
+  | `CRITICAL` | `DETECTED` | **SQL Injection in User Lookup** (`CWE-89`) | `pkg/auth/store.go:42` | Automated Fix Pending |
+  | `HIGH` | `DETECTED` | **Hardcoded API Key** (`CWE-798`) | `cmd/server/main.go:18` | Automated Fix Pending |
+
+  <details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>
+
+  #### 1. SQL Injection in User Lookup (`CWE-89`)
+  - **Location:** `pkg/auth/store.go:42`
+  - **Severity:** `CRITICAL` | **Status:** `DETECTED`
+  - **Threat Analysis & Impact:**
+
+  Raw string concatenation in query allows arbitrary SQL execution.
+
+  </details>
+  ```
+
+### 2. In-Diff Inline Review Suggestion Comment (Tier 2 — `--mode=inline`):
 
 When `hunk.start_line` and `hunk.end_line` fall within `commit.diff` hunks, the
 publisher invokes `POST /repos/{owner}/{repo}/pulls/{number}/comments`:
@@ -269,8 +301,7 @@ publisher invokes `POST /repos/{owner}/{repo}/pulls/{number}/comments`:
 - `start_side`: `"RIGHT"` if multi-line, omitted if single-line
 - `body`:
   ````markdown
-  ### 🛡️ CodeMender Auto-Fix Suggestion: SQL Injection in User Lookup
-  > **Vulnerability:** CWE-89 | **Severity:** HIGH | **Status:** FIXED
+  ### 🛡️ CodeMender Fix: SQL Injection in User Lookup
 
   Replaced string concatenation with parameterized query.
 
@@ -280,17 +311,19 @@ publisher invokes `POST /repos/{owner}/{repo}/pulls/{number}/comments`:
   ```
   ````
 
-### 2. Out-of-Diff Fallback Path (HTTP 422 Mitigation):
+### 3. Out-of-Diff Fallback Path & Deduplication (HTTP 422 Mitigation):
 
 If the GitHub API rejects the comment with HTTP 422 (line outside PR diff), the
 script catches `urllib.error.HTTPError` where `err.code == 422` and creates an
 issue comment via `POST /repos/{owner}/{repo}/issues/{number}/comments`:
 
 - `issue_number`: PR Number
+- `fallback_posted`: Boolean tracked per envelope to deduplicate multiple
+  out-of-diff hunk failures into a single top-level issue comment.
 - `body`:
   ````markdown
-  ### 🛡️ CodeMender Security Finding (Outside PR Diff)
-  **File:** `legacy/helper.go:120` | **Severity:** HIGH | **Vulnerability:** CWE-798
+  ### 🛡️ CodeMender Security Finding (Outside PR Diff): SQL Injection in User Lookup
+  **File:** `legacy/helper.go:120` | **Severity:** HIGH | **Vulnerability:** CWE-89
 
   Hardcoded credential detected in untouched helper code.
 
@@ -300,26 +333,27 @@ issue comment via `POST /repos/{owner}/{repo}/issues/{number}/comments`:
   ```
   ````
 
-### 3. Potentially Preexisting Finding Advisory Comment Path:
+### 4. Potentially Preexisting Finding Advisory Comment Path (`--advisory`):
 
 For scan findings that fall on lines untouched by `commit.diff`:
 
 - `issue_number`: PR Number
 - `body`:
   ```markdown
-  ### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding (Non-Blocking)
-  > **Note:** This finding is in code not modified by this pull request and is non-blocking.
+  ### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding(s) (Non-Blocking)
+  > **Note:** The following finding(s) were detected in untouched sections of the codebase outside the current pull request diff. They are advisory and do not block this PR.
 
-  **File:** `legacy/helper.go:120` | **Severity:** HIGH | **Vulnerability:** CWE-798
-
-  Hardcoded credential detected in untouched helper code.
+  #### 1. Hardcoded Secret
+  - **File:** `legacy/helper.go:120`
+  - **Severity:** `HIGH` | **Vulnerability:** `CWE-798`
+  - **Details:** Hardcoded credential detected in untouched helper code.
   ```
 
-### 4. Step Summary Generation:
+### 5. Step Summary Generation:
 
 For all processed findings (both `FIXED`, `UNRESOLVED`, and potentially
-preexisting advisories), the script or workflow formats a markdown status card
-and appends it to `$GITHUB_STEP_SUMMARY`.
+preexisting advisories), the script formats a markdown status card and appends
+it to `$GITHUB_STEP_SUMMARY`.
 
 ______________________________________________________________________
 

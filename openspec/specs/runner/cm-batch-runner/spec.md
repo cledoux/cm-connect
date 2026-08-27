@@ -455,13 +455,20 @@ ______________________________________________________________________
 ### REQ-0012: Multi-Mode Authentication Support
 
 The container MUST support Google Cloud authentication through any of the
-following three mechanisms:
+following mechanisms:
 
 1. Short-lived OAuth/OIDC access token via `CLOUDSDK_AUTH_ACCESS_TOKEN`.
 1. Workload Identity / Service Account configuration via
    `GOOGLE_APPLICATION_CREDENTIALS` (with mounted credential file).
 1. Mounted host Application Default Credentials (ADC) directory at
    `/home/codemender/.config/gcloud:ro`.
+1. **Google Cloud Project Auto-Population & Environment Forwarding:** If
+   `GOOGLE_CLOUD_PROJECT` or `CLOUDSDK_CORE_PROJECT` is unset in the
+   environment, `cm-runner` MUST inspect the credential file at
+   `GOOGLE_APPLICATION_CREDENTIALS` (or standard ADC configuration paths) to
+   extract `project_id` or `quota_project_id`, automatically populating
+   `GOOGLE_CLOUD_PROJECT` and exporting project variables to child subprocesses
+   (`cm find`, `cm report`, `cm fix`).
 
 #### Scenario: Authenticate via access token
 
@@ -476,6 +483,14 @@ following three mechanisms:
   file mounted
 - **WHEN** running `find`
 - **THEN** CodeMender MUST authenticate to Vertex AI successfully.
+
+#### Scenario: Auto-populate GOOGLE_CLOUD_PROJECT from credentials
+
+- **GIVEN** `GOOGLE_APPLICATION_CREDENTIALS` pointing to a credential file
+  containing `"project_id": "my-gcp-project"` with unset `GOOGLE_CLOUD_PROJECT`
+- **WHEN** `cm-runner` initializes
+- **THEN** `cm-runner` MUST auto-populate and export
+  `GOOGLE_CLOUD_PROJECT=my-gcp-project` to child subprocesses.
 
 #### Scenario: Authenticate via mounted ADC directory
 

@@ -47,9 +47,13 @@ that:
    Actions matrix payloads (`outputs.findings_matrix`) using `jq` to execute
    `cm-runner fix` across concurrent runner jobs with configurable
    `max-parallel` bounds and top-$N$ severity prioritization.
-1. **Synthesizes 1-Click Apply Review Comments:** Converts `ChangeEnvelope` hunk
-   records into inline GitHub Pull Request Review comments
-   (`POST /pulls/{id}/reviews`) with markdown ```` ```suggestion ```` blocks.
+1. **Two-Tier PR Commenting Architecture:**
+   - **Tier 1 (Executive Scan Summary):** Publishes a top-level summary issue
+     comment and `$GITHUB_STEP_SUMMARY` detailing total finding counts, metrics
+     table by severity, and collapsible `<details>` threat analysis.
+   - **Tier 2 (Inline Review Suggestions):** Converts `ChangeEnvelope` hunk
+     records into inline GitHub Pull Request Review comments
+     (`POST /pulls/{id}/reviews`) with markdown ```` ```suggestion ```` blocks.
 1. **Gracefully Handles Diff Boundaries:** Detects whether findings intersect
    the pull request diff, routing out-of-diff findings to PR issue comments or
    `$GITHUB_STEP_SUMMARY` to prevent GitHub API `422 Unprocessable Entity`
@@ -135,16 +139,22 @@ ______________________________________________________________________
 The `scan` job MUST execute `cm-runner find-diff` targeting the pull request
 base and head commit SHAs
 (`find-diff "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"`)
-and trap the exit code:
+inside Docker mounting `-v "$(pwd):/workspace"`, passing
+`--user "$(id -u):$(id -g)"`, and forwarding project environment variables
+(`GOOGLE_CLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT`). The workflow MUST trap the
+scanner exit code:
 
 1. **Exit Code 0 (Clean / Empty Diff):** Scanner found zero vulnerabilities or
    the pull request diff was empty (0 bytes). The step MUST emit
    `has_findings=false` and terminate successfully without dispatching
    downstream remediation matrix jobs.
 1. **Exit Code 1 (Findings Detected):** Scanner detected one or more
-   vulnerabilities in modified lines. The step MUST NOT fail the job, but MUST
-   capture the JSON output from `stdout` to `.codemender-out/findings.json` and
-   set `has_findings=true`.
+   vulnerabilities in modified lines. The step MUST NOT fail the job, MUST
+   capture the JSON output from `stdout` to `.codemender-out/findings.json`,
+   MUST execute the Tier 1 Executive Scan Summary publisher
+   (`python3 "$PUBLISH_SCRIPT" --mode=summary .codemender-out/findings.json`) to
+   post an executive summary comment and step summary card, and MUST set
+   `has_findings=true`.
 1. **Exit Code > 1 (Error):** Scanner encountered a fatal CLI, git, or runtime
    error. The step MUST fail immediately and propagate the non-zero exit code.
 
@@ -156,11 +166,12 @@ and trap the exit code:
 - **THEN** the scan step MUST set output `has_findings=false` and complete
   without scheduling downstream fix jobs.
 
-#### Scenario: Trap exit code 1 on detected vulnerabilities
+#### Scenario: Trap exit code 1 and publish executive scan summary
 
 - **GIVEN** a pull request with vulnerabilities in modified PR files
 - **WHEN** `cm-runner find-diff base.sha head.sha` terminates with exit code `1`
-- **THEN** the workflow MUST capture the findings JSON payload, set
+- **THEN** the workflow MUST capture the findings JSON payload, publish an
+  executive summary report via `publish_comments.py --mode=summary`, set
   `has_findings=true`, and proceed to dynamic matrix generation.
 
 #### Scenario: Fast-path clean exit on empty diff
@@ -240,8 +251,13 @@ The `fix` job MUST execute with
 and `fail-fast: false`:
 
 1. Each matrix job MUST execute on an independent runner VM or container.
-1. The job MUST pass the single finding payload to `cm-runner fix -` via
-   standard input or a temporary file.
+1. The job MUST pass the single finding payload via a step environment variable
+   (`env: FINDING_PAYLOAD: ${{ toJson(matrix.finding.payload) }}`) and write it
+   to `.codemender-out/finding.json` using `printf '%s\n'`, preventing shell
+   quoting errors.
+1. The container MUST execute with `--user "$(id -u):$(id -g)"`, mount
+   `-v "$(pwd):/workspace"`, forward project environment variables, and pipe the
+   finding to `cm-runner fix -`.
 1. The job MUST capture the resulting `ChangeEnvelope` JSON from `stdout`.
 1. If `cm-runner fix` returns exit code `0` (`status == "FIXED"`), the job MUST
    proceed to post review comments.
@@ -252,7 +268,7 @@ and `fail-fast: false`:
 #### Scenario: Remediate finding in parallel matrix job
 
 - **GIVEN** an incoming matrix item with finding payload
-- **WHEN** `docker run ... cm-runner fix /tmp/finding.json` executes
+- **WHEN** `docker run ... cm-runner fix -` executes
 - **THEN** `cm-runner` MUST emit a `ChangeEnvelope` JSON record to `stdout` with
   exit code `0`.
 
@@ -265,31 +281,57 @@ and `fail-fast: false`:
 
 ______________________________________________________________________
 
-### REQ-0006: Pull Request Review Suggestion Translation and Formatting
+### REQ-0006: Two-Tier Pull Request Commenting & Review Suggestion Translation
 
-For each fixed finding with valid `hunks`, the review publisher MUST format each
-hunk into an inline review suggestion comment:
+The PR review workflow MUST implement a Two-Tier commenting architecture:
 
-1. **Comment Body Format:**
-   ````markdown
-   ### 🛡️ CodeMender Auto-Fix: <Title>
-   > **Vulnerability:** <VulnType> | **Severity:** <Severity>
+1. **Tier 1 (Executive Scan Summary Report — `--mode=summary`):**
 
-   <Summary>
+   - Executed during the `scan` job when vulnerabilities are detected.
+   - Formats an executive Markdown summary comment and appends to
+     `$GITHUB_STEP_SUMMARY`:
+     - Header with total findings count and breakdown by severity (`CRITICAL`,
+       `HIGH`, `MEDIUM`, `LOW`, `UNKNOWN`).
+     - Structured findings table
+       (`| Severity | Status | Finding | Location | Action |`).
+     - Collapsible
+       `<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>`
+       block containing detailed threat analysis and impact for each finding.
+   - Posts directly to PR issue comments
+     (`POST /repos/{owner}/{repo}/issues/{number}/comments`).
 
-   ```suggestion
-   <Hunk.Replacement>
-   ```
-   ````
-1. **API Coordinates:**
-   - `path`: `hunk.file_path`
-   - `side`: `"RIGHT"`
-   - `start_side`: `"RIGHT"` (if multi-line)
-   - `start_line`: `hunk.start_line` (omitted if single-line
-     `start_line == end_line`)
-   - `line`: `hunk.end_line`
+1. **Tier 2 (Inline Review Suggestions — `--mode=inline`):**
 
-#### Scenario: Translate single-line hunk to review suggestion
+   - Executed during the `fix` matrix job for each remediated finding with valid
+     `hunks`.
+   - Formats each hunk into an inline review suggestion comment:
+     ````markdown
+     ### 🛡️ CodeMender Fix: <Title>
+
+     <Summary>
+
+     ```suggestion
+     <Hunk.Replacement>
+     ```
+     ````
+   - **API Coordinates:**
+     - `path`: `hunk.file_path`
+     - `side`: `"RIGHT"`
+     - `start_side`: `"RIGHT"` (if multi-line)
+     - `start_line`: `hunk.start_line` (omitted if single-line
+       `start_line == end_line`)
+     - `line`: `hunk.end_line`
+   - Appends a remediation summary card to `$GITHUB_STEP_SUMMARY`.
+
+#### Scenario: Publish executive scan summary report (Tier 1)
+
+- **GIVEN** a scan result containing 2 findings
+- **WHEN** `publish_comments.py --mode=summary findings.json` executes
+- **THEN** it MUST post an issue comment with the findings metrics, summary
+  table, and collapsible threat analysis
+- **AND** append the executive summary to `$GITHUB_STEP_SUMMARY`.
+
+#### Scenario: Translate single-line hunk to review suggestion (Tier 2)
 
 - **GIVEN** a `ChangeEnvelope` with a single-line hunk replacing line 42 of
   `pkg/auth/store.go`
@@ -298,7 +340,7 @@ hunk into an inline review suggestion comment:
   `path="pkg/auth/store.go"`, `line=42`, and a ```` ```suggestion ```` block
   containing the replacement.
 
-#### Scenario: Translate multi-line hunk to review suggestion
+#### Scenario: Translate multi-line hunk to review suggestion (Tier 2)
 
 - **GIVEN** a `ChangeEnvelope` with a multi-line hunk replacing lines 42–45 of
   `pkg/auth/store.go`
@@ -311,7 +353,7 @@ ______________________________________________________________________
 
 ### REQ-0007: Diff-Boundary Fallback & Potentially Preexisting Advisory Comments
 
-1. **HTTP 422 Diff-Boundary Fallback:**
+1. **HTTP 422 Diff-Boundary Fallback & Deduplication:**
    - If the GitHub API rejects an inline review comment with HTTP
      `422 Unprocessable Entity` (indicating the targeted fix hunk falls outside
      the pull request's diff hunk):
@@ -321,29 +363,34 @@ ______________________________________________________________________
        `$GITHUB_STEP_SUMMARY`.
      - The fallback comment MUST contain the finding title, summary, and the
        unified diff patch in a ```` ```diff ```` code block.
-1. **Potentially Preexisting Finding Advisory Comments:**
+     - The publisher MUST track fallback dispatch (`fallback_posted`), ensuring
+       that at most 1 top-level fallback comment is posted per `ChangeEnvelope`
+       even when multiple hunks fail with HTTP 422.
+1. **Potentially Preexisting Finding Advisory Comments (`--advisory`):**
    - For findings identified by the scanner that do not intersect modified lines
      in `commit.diff`:
      - The comment publisher or workflow step MUST format and publish a
        top-level pull request issue comment or step summary.
      - The comment header MUST clearly state:
-       `### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding (Non-Blocking)`.
+       `### 🛡️ CodeMender Advisory: Potentially Preexisting Security Finding(s) (Non-Blocking)`.
      - The comment MUST include the file path, line number, severity,
        vulnerability type, analysis summary, and an explicit disclaimer that
        this finding is outside the active pull request diff and does not block
        PR approval or merging.
 
-#### Scenario: Fallback to top-level comment on out-of-diff rejection
+#### Scenario: Fallback to top-level comment on out-of-diff rejection and deduplicate
 
-- **GIVEN** a valid fix patch on a file line that GitHub rejects with HTTP 422
-- **WHEN** `createReviewComment` throws an error
-- **THEN** the publisher MUST post a top-level PR comment with the diff patch
-  and log the fallback.
+- **GIVEN** a valid fix patch with multiple hunks on lines that GitHub rejects
+  with HTTP 422
+- **WHEN** `createReviewComment` throws an HTTP 422 error on multiple hunks
+- **THEN** the publisher MUST post at most 1 top-level PR fallback comment with
+  the diff patch
+- **AND** log the fallback without failing the job.
 
 #### Scenario: Post non-blocking advisory comment for potentially preexisting finding
 
 - **GIVEN** a scan finding on an untouched file line outside `commit.diff`
-- **WHEN** the advisory comment publisher runs
+- **WHEN** the advisory comment publisher runs with `--advisory`
 - **THEN** it MUST post a top-level PR issue comment or `$GITHUB_STEP_SUMMARY`
   card marked as non-blocking and advisory
 - **AND** the check status MUST remain successful (green).
@@ -446,10 +493,21 @@ ______________________________________________________________________
 
 The test suite MUST verify the PR review comment publisher script
 (`github-actions/scripts/publish_comments.py`) across single-line suggestions,
-multi-line suggestions, HTTP 422 diff-boundary fallbacks, unresolved findings,
-step summary generation, and CLI execution interfaces.
+multi-line suggestions, executive scan summary reports (`--mode=summary`),
+non-blocking advisory reports (`--advisory`), HTTP 422 diff-boundary fallbacks
+and deduplication, unresolved findings, step summary generation, and CLI
+execution interfaces.
 
-#### Scenario: Publish single-line review suggestion comment
+#### Scenario: Publish executive scan summary comment (--mode=summary)
+
+- **GIVEN** a findings JSON file containing scan findings
+- **WHEN** `publish_comments.py --mode=summary findings.json` executes
+- **THEN** it MUST post an executive summary comment to the PR issue endpoint
+  with finding counts, severity breakdown, metrics table, and collapsible threat
+  analysis
+- **AND** append the markdown summary to `$GITHUB_STEP_SUMMARY`.
+
+#### Scenario: Publish single-line review suggestion comment (--mode=inline)
 
 - **GIVEN** a `ChangeEnvelope` JSON fixture with a single-line hunk
   (`change_envelope_single_line.json` with `start_line: 42, end_line: 42`)
@@ -459,7 +517,7 @@ step summary generation, and CLI execution interfaces.
   `start_line` and `start_side`, with a ```` ```suggestion ```` markdown body
   containing the single-line replacement.
 
-#### Scenario: Publish multi-line review suggestion comment
+#### Scenario: Publish multi-line review suggestion comment (--mode=inline)
 
 - **GIVEN** a `ChangeEnvelope` JSON fixture with a multi-line hunk
   (`change_envelope_multiline.json` with `start_line: 42, end_line: 43`)
@@ -469,7 +527,7 @@ step summary generation, and CLI execution interfaces.
   `start_side: "RIGHT"`, `side: "RIGHT"`, with a ```` ```suggestion ````
   markdown body containing the multi-line replacement.
 
-#### Scenario: Handle HTTP 422 error and fall back to top-level issue comment
+#### Scenario: Handle HTTP 422 error, fall back to issue comment, and deduplicate
 
 - **GIVEN** a `ChangeEnvelope` where review comment creation rejects with HTTP
   422 Unprocessable Entity (out of PR diff hunk)
@@ -477,7 +535,9 @@ step summary generation, and CLI execution interfaces.
 - **THEN** it MUST NOT fail the step and MUST invoke
   `POST /repos/{owner}/{repo}/issues/{number}/comments` with
   `issue_number: <PR_NUMBER>` and a markdown body containing finding metadata
-  and the patch inside a ```` ```diff ```` block.
+  and the patch inside a ```` ```diff ```` block
+- **AND** subsequent hunks in the same envelope MUST NOT post duplicate fallback
+  issue comments.
 
 #### Scenario: Handle unresolved finding without posting review comments
 
@@ -499,7 +559,7 @@ step summary generation, and CLI execution interfaces.
 
 - **GIVEN** `publish_comments.py`
 - **WHEN** invoked via Python 3 standard library CLI
-  (`python3 publish_comments.py <envelope.json>`)
-- **THEN** it MUST parse the change envelope and publish review comments, issue
+  (`python3 publish_comments.py [--mode=summary|--mode=inline|--advisory] <file.json>`)
+- **THEN** it MUST parse the payload and publish review comments, issue
   comments, and step summaries without requiring third-party pip packages or
   Node.js runtimes.
