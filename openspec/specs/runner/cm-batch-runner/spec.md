@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0002.md
   - adrs/ADR-0007.md
   - adrs/ADR-0008.md
+  - adrs/ADR-0009.md
 ---
 
 # CodeMender Headless Batch Scanner Container Specification (`find`)
@@ -602,7 +603,8 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
 
 - **GIVEN** a git repository where `git diff HEAD HEAD` produces 0 bytes
 - **WHEN** executing `cm-runner find-diff HEAD HEAD`
-- **THEN** `cm-runner` MUST immediately emit `[]` on `stdout`
+- **THEN** `cm-runner` MUST immediately emit a Scan Envelope with empty findings
+  and zeroed token metrics on `stdout` (`{"findings": [], "tokens": {...}}`)
 - **AND** terminate cleanly with exit code `0`.
 
 #### Scenario: Consolidate user-supplied context flags with repository grounding
@@ -619,3 +621,70 @@ for diff-scoped vulnerability discovery, implementing ADR-0007:
 - **WHEN** `git diff` exits with error code 128
 - **THEN** `cm-runner` MUST emit a diagnostic error to `stderr` and exit with
   code `2`.
+
+______________________________________________________________________
+
+### REQ-0015: In-Band Token Telemetry and Scan Envelope Synthesis
+
+When executing `find` or `find-diff`, `cm-runner` MUST capture LLM token telemetry
+and emit a unified Scan Envelope JSON object on `stdout`:
+
+1. **Scan Envelope Payload (`stdout`):** The output on `stdout` MUST be a valid
+   JSON object containing:
+   - `findings`: Array of discovered vulnerability finding objects (or `[]` if clean).
+   - `tokens`: Object containing `input_tokens`, `output_tokens`, `cached_tokens`,
+     `thought_tokens`, `total_tokens`, `cache_hit_percent`, `think_ratio_percent`,
+     `duration_seconds`, and `duration_formatted`.
+2. **Precision Stats Resolution:** Upon completion of the scan phase, `cm-runner`
+   MUST extract the active session ID (from `stderr` session log notification or
+   `~/.codemender/state.db`) and query `/usr/local/bin/cm stats --session <id> --json`.
+3. **Diagnostic Console Banner (`stderr`):** `cm-runner` MUST format and emit a
+   human-readable token summary box to `stderr` displaying token counts with
+   metric notation (e.g. `78.4k`, `1.2M`) and prompt cache efficiency.
+4. **Exit Code Fidelity:** Exit codes MUST be evaluated against the `findings`
+   array: exit code `0` if `findings` is empty, exit code `1` if `findings`
+   contains one or more items.
+
+#### Scenario: Emit Scan Envelope with in-band token metrics on stdout
+
+- **GIVEN** a codebase scanned via `cm-runner find .`
+- **WHEN** the scan completes
+- **THEN** `stdout` MUST parse as a JSON object containing `"findings"` and `"tokens"`
+- **AND** `tokens.total_tokens` MUST be greater than 0
+- **AND** a human-readable telemetry banner MUST be printed to `stderr`.
+
+#### Scenario: Clean scan emits empty findings list with token metrics
+
+- **GIVEN** a clean repository scanned via `cm-runner find .`
+- **WHEN** the scan completes with 0 findings
+- **THEN** `stdout` MUST contain `{"findings": [], "tokens": {...}}`
+- **AND** the process MUST terminate with exit code `0`.
+
+______________________________________________________________________
+
+### REQ-0016: Host-Mapped Results Directory Resolution
+
+`cm-runner` MUST resolve a designated host-mapped results directory for storing
+detailed analytical artifacts according to the following precedence hierarchy:
+
+1. Explicit CLI flag: `--out-dir=<path>` or `--results-dir=<path>`.
+2. Explicit environment variable: `CM_OUTPUT_DIR` or `CM_RESULTS_DIR`.
+3. Standard container volume mount: `/results` (if existing and accessible).
+4. Default workspace fallback: `<workspace>/.codemender-out` (automatically created).
+
+The results directory MUST be reserved for detailed run artifacts (such as raw
+session logs, SQLite database snapshots, CSV ledgers, and multi-run benchmarks)
+without polluting the primary data streams.
+
+#### Scenario: Resolve results directory via environment variable
+
+- **GIVEN** `CM_OUTPUT_DIR=/workspace/.codemender-out` passed in environment
+- **WHEN** `cm-runner` initializes
+- **THEN** the results directory MUST resolve to `/workspace/.codemender-out`.
+
+#### Scenario: Default fallback creates workspace results directory
+
+- **GIVEN** no CLI flags or environment variables specified
+- **WHEN** `cm-runner` executes
+- **THEN** it MUST default to creating and using `<workspace>/.codemender-out`.
+

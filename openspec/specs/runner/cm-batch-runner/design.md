@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0002.md
   - adrs/ADR-0007.md
   - adrs/ADR-0008.md
+  - adrs/ADR-0009.md
 ---
 
 # CodeMender Headless Batch Scanner Container Design (`find`)
@@ -608,3 +609,15 @@ ______________________________________________________________________
 1. **`find-diff` Post-Scan Cleanup Test:** Assert `/workspace/pull-request.diff`
    does not exist after `find-diff` terminates, even if scanning encounters an
    error.
+
+1. **In-Band Scan Envelope Synthesis Test:** Execute `cm-runner find .` and
+   verify `stdout` contains a JSON object with `"findings"` and `"tokens"`, with
+   zero terminal leakage into the data stream.
+
+1. **Empty Diff Envelope Uniformity Test:** Execute `cm-runner find-diff HEAD HEAD`
+   and verify `stdout` contains `{"findings": [], "tokens": {...}}` and exits 0.
+
+1. **Results Directory Permission Fallback Test:** Simulate a read-only
+   `/workspace` (`EROFS`) and verify `cm-runner` cleanly falls back to
+   `/tmp/.codemender-out` while logging an informational message to `stderr`.
+

@@ -12,6 +12,7 @@ governing_adrs:
   - adrs/ADR-0005.md
   - adrs/ADR-0006.md
   - adrs/ADR-0007.md
+  - adrs/ADR-0009.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Design (`cm-pr-workflow`)
@@ -284,6 +285,17 @@ Executed during the `scan` job when vulnerabilities are detected:
   Raw string concatenation in query allows arbitrary SQL execution.
 
   </details>
+
+  ### 🪙 CodeMender Token Telemetry
+
+  | Metric | Tokens | Details |
+  |---|---|---|
+  | **Input Tokens** | 78,412 (78.4k) | Raw prompt context |
+  | **Cached Tokens** | 24,190 (24.2k) | **30.9% prompt cache hit** |
+  | **Output Tokens** | 1,840 (1.8k) | Generated findings & analysis |
+  | **Thought Tokens** | 5,210 (5.2k) | Gemini reasoning trace |
+  | **Grand Total** | **85,462 (85.5k)** | Total billed compute |
+  | **Execution Time** | 18.4s | Subprocess wall time |
   ```
 
 ### 2. In-Diff Inline Review Suggestion Comment (Tier 2 — `--mode=inline`):

@@ -11,6 +11,7 @@ governing_adrs:
   - adrs/ADR-0005.md
   - adrs/ADR-0006.md
   - adrs/ADR-0007.md
+  - adrs/ADR-0009.md
 ---
 
 # CodeMender GitHub Actions CI/CD PR Review Workflow Specification (`cm-pr-workflow`)
@@ -193,8 +194,9 @@ ______________________________________________________________________
 ### REQ-0004: Dynamic Matrix Partitioning and Finding Scope Classification
 
 When `has_findings=true`, the `scan` job MUST parse
-`.codemender-out/findings.json` using `jq` against `commit.diff` and classify
-findings into two streams:
+`.codemender-out/findings.json` using `jq` (`filter_findings.jq`) against `commit.diff`,
+transparently extracting the findings array from either a Scan Envelope object
+(`.findings`) or a legacy raw array (`.`), and classify findings into two streams:
 
 1. **In-Diff Findings (Actionable / Blocking Fix Candidates):**
    - Findings whose `FilePath` and line range intersect lines added or modified
@@ -297,6 +299,10 @@ The PR review workflow MUST implement a Two-Tier commenting architecture:
      - Collapsible
        `<details><summary><b>🔍 View Vulnerability & Threat Analysis</b></summary>`
        block containing detailed threat analysis and impact for each finding.
+     - **Token Ledger Telemetry Table:** If the input payload contains a `"tokens"`
+       object, render a structured Token Ledger table detailing Input Tokens,
+       Cached Tokens (with cache hit %), Output Tokens, Thought Tokens,
+       Grand Total Billed Tokens, and Compute Duration.
    - Posts directly to PR issue comments
      (`POST /repos/{owner}/{repo}/issues/{number}/comments`).
 
@@ -325,10 +331,10 @@ The PR review workflow MUST implement a Two-Tier commenting architecture:
 
 #### Scenario: Publish executive scan summary report (Tier 1)
 
-- **GIVEN** a scan result containing 2 findings
+- **GIVEN** a scan result containing 2 findings and a populated `"tokens"` block
 - **WHEN** `publish_comments.py --mode=summary findings.json` executes
 - **THEN** it MUST post an issue comment with the findings metrics, summary
-  table, and collapsible threat analysis
+  table, collapsible threat analysis, and **Token Ledger** table
 - **AND** append the executive summary to `$GITHUB_STEP_SUMMARY`.
 
 #### Scenario: Translate single-line hunk to review suggestion (Tier 2)
