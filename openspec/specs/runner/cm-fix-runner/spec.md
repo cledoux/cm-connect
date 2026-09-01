@@ -9,6 +9,7 @@ governing_adrs:
   - adrs/ADR-0003.md
   - adrs/ADR-0005.md
   - adrs/ADR-0008.md
+  - adrs/ADR-0009.md
 ---
 
 # CodeMender Stateless Fix Runner Container Specification (`fix`)
@@ -383,3 +384,31 @@ The container MUST execute strictly as the unprivileged non-root user
 - **GIVEN** a running container instance
 - **WHEN** checking process credentials
 - **THEN** UID and GID MUST both equal 1000.
+
+______________________________________________________________________
+
+### REQ-0012: In-Band Token Telemetry and Diagnostic Banner (`fix`)
+
+When executing `fix`, `cm-runner` MUST capture LLM token telemetry and enrich the
+`ChangeEnvelope` emitted on `stdout`:
+
+1. **Enriched ChangeEnvelope Payload (`stdout`):** The output on `stdout` MUST
+   include a `"tokens"` object matching the `TokenMetrics` schema containing
+   `input_tokens`, `output_tokens`, `cached_tokens`, `thought_tokens`,
+   `total_tokens`, `cache_hit_percent`, `think_ratio_percent`,
+   `duration_seconds`, and `duration_formatted`.
+2. **Precision Stats Resolution:** Upon completion of `cm fix`, `cm-runner` MUST
+   extract the active session ID (from `stderr` session log notification or
+   `~/.codemender/state.db`) and query `/usr/local/bin/cm stats --session <id> --json`.
+3. **Diagnostic Console Banner (`stderr`):** `cm-runner` MUST format and emit a
+   human-readable token summary box to `stderr` displaying token counts with
+   metric notation (e.g. `12.5k`, `8.2k`) and prompt cache efficiency.
+
+#### Scenario: Emit ChangeEnvelope with in-band token metrics on stdout
+
+- **GIVEN** a valid finding remediated via `cm-runner fix /tmp/finding.json`
+- **WHEN** remediation generates code modifications
+- **THEN** `stdout` MUST parse as a JSON object containing `"status": "FIXED"`
+  and a populated `"tokens"` object
+- **AND** a human-readable telemetry banner MUST be printed to `stderr`.
+
